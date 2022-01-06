@@ -10,4 +10,8 @@ report
 common-processed/anatomical
 common-processed/modules
 common-processed/logs
-scripts/.svn
+scripts/.svncommon-processed/00_Cache.txt
+common-processed/PipelineResults.txt
+common-processed/oldcaceh.txt
+scripts/.svn/
+common-processed/00_Cache.txt
