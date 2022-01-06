@@ -1,0 +1,560 @@
+#!/bin/sh
+
+umask 000
+
+source `dirname ${BASH_SOURCE[0]}`/bashMutex.sh || exit 1
+
+#=========================================================
+# $1: file to read
+#=========================================================
+function cleanVariablesDeclaredInFile()
+{
+  OLDIFS=$IFS
+
+  IFS=$'\n'
+
+  for line in $(cat "$1")
+  do
+  
+    varname=`echo $line | sed "s/\(.*\)#.*/\1/"`
+    varname=`echo $varname | sed "s/\(.*\)=.*/\1/"`
+    if [ ! -z "$varname" ] && [ "$varname" != "$line" ]; then
+      eval ${varname}=''
+    fi
+  done
+
+  IFS=$OLDIFS
+}
+
+#=========================================================
+# Set the variable 'prefix' and all the variables in
+# the ${prefix}PipelineResults.txt file
+# $1: Case number
+# $2: Scan number
+#=========================================================
+function getPipelineResults()
+{
+  local c=$1
+  local s=$2
+
+  prefix=`getCaseScanPrefix $c $s`
+  local scanDir=`getCaseScanProcessedDir $c $s`
+  if [ $? -ne 0 ]; then
+    echo "readPipelineResults (DBUtils.txt): Invalid scanDir" 
+    return 1
+  else
+    echo "- Read ${prefix}PipelineResults.txt" 
+    source "$scanDir/ScanInfo.sh" || exit 1
+    source "$scanDir/common-processed/${prefix}PipelineResults.txt" || exit 1
+    return 0
+  fi
+}
+
+
+#=========================================================
+#=========================================================
+function closePipelineResults()
+{
+  local c=$1
+  local s=$2
+  
+  prefix=`getCaseScanPrefix $c $s`
+  local scanDir=`getCaseScanProcessedDir $c $s`
+  if [ $? -ne 0 ]; then
+    echo "closePipelineResults (DBUtils.txt): Invalid scanDir" 
+    return 1
+  else
+    echo "- Clean ${prefix}PipelineResults.txt" 
+    cleanVariablesDeclaredInFile "$scanDir/ScanInfo.sh" 
+    cleanVariablesDeclaredInFile "$scanDir/common-processed/${prefix}PipelineResults.txt" 
+    prefix=""
+  fi
+}
+
+
+#=========================================================
+# Get the number of scans for a case
+# $1 : case number
+#=========================================================
+function getNumberOfScans()
+{
+  local dir=`getCaseProcessedDir $1`
+  if [ $? -ne 0 ]; then
+    return 1;		# error
+  fi
+
+  source "$dir/CaseInfo.sh" || exit 1
+  echo $ScanCount
+  return 0;		# no error
+}
+
+#=========================================================
+# Gets the folder name of a case number. 
+# $1 : case number
+#=========================================================
+function getCaseProcessedDir()
+{
+  if [ -z "${Case[$1]}" ] || [ ! -f "${Case[$1]}/CaseInfo.sh" ] ; then
+    echo "ERROR. Cannot find valid case number $1."
+    return 1		# error
+  fi
+
+  echo "${Case[$1]}"
+  return 0		# no error
+}
+
+#=========================================================
+# Gets the folder name of a case-scan. It also loads
+# the ScanInfo.sh file
+# $1 : case number
+# $2 : scan number
+#=========================================================
+function getCaseScanProcessedDir()
+{
+  CaseProcessedDir=`getCaseProcessedDir $1`;
+  if [ $? -ne 0 ]; then
+    return 1;		# error
+  fi
+
+  source "$CaseProcessedDir/CaseInfo.sh" || exit 1
+  if [ -z "${Scan[$2]}" ] || [ ! -f "${Scan[$2]}/ScanInfo.sh" ] ; then
+    echo "ERROR. Cannot find valid scan $2 for the case number $1. "
+    return 1;
+  fi
+
+  source "${Scan[$2]}/ScanInfo.sh" || exit 1
+  echo "${Scan[$2]}"
+  return 0		# no error
+}
+
+#=========================================================
+# Gets the prefix for a case scan  (cXXX_sXX_)
+# $1 : case number
+# $2 : scan number
+#=========================================================
+function getCaseScanPrefix()
+{
+  local prefix=`printf "c%03d-s%02d_" $1 $2`;
+  echo $prefix
+}
+
+# $1: dicom file
+# $2: dicom tag
+function getDicomValue()
+{
+    local val=`dcdump "$1" 2>&1 |  grep "$2" | cut -d'>' -f 3 | cut -d'<' -f 2`
+    if [ $? -ne 0 ]; then
+       val=""
+    else
+       val=`echo "$val" | sed "s/\ //g"`
+    fi
+    echo $val
+}
+
+#=========================================================
+# UPDATE THE SCAN INFO FILE
+#=========================================================
+function WriteScanInfo()
+{
+  #------------------------------------------
+  # Check that ScanProcessedDir was set
+  #------------------------------------------
+  if [ -z "$ScanProcessedDir" ] || [ ! -d "$ScanProcessedDir" ]; then
+    echo "FATAL ERROR in WritePatientStudy. ScanProcessedDir is not set or invalid"
+    exit 1;   
+  fi 
+
+  #------------------------------------------
+  # Update the file !
+  #------------------------------------------
+  local ofile="$ScanProcessedDir/ScanInfo.sh"
+
+  local lockfile="$ScanProcessedDir/ScanInfo.lock"
+  mutexLockFile "$lockfile"
+
+  echo "- Updating <$ofile>"
+
+  echo "#!/bin/sh" > $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "# Scan description" >> $ofile
+  echo "# Can be imported in a pipeline script." >> $ofile
+  echo "# Benoit Scherrer, 2010" >> $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "ScanRawDir=\"$ScanRawDir\"" >> $ofile
+  echo "ScanProcessedDir=\"$ScanProcessedDir\"" >> $ofile
+  echo "ScanRelativeDir=\"$ScanRelativeDir\"" >> $ofile
+
+  echo "" >> $ofile
+  echo "CaseName=\"$CaseName\"" >> $ofile
+  echo "ScanName=\"$ScanName\"" >> $ofile
+  echo "CaseNumber=\"$CaseNumber\"" >> $ofile
+  echo "ScanNumber=\"$ScanNumber\"" >> $ofile
+
+  echo "" >> $ofile
+  echo "PatientName=\"$PatientName\"" >> $ofile
+  if [ ! -z "$PatientMRN" ]; then
+    echo "MRN=\"$PatientMRN\"" >> $ofile
+  fi
+  if [ ! -z "$PatientDOB" ]; then
+    echo "DOB=\"$PatientDOB\"" >> $ofile
+  fi
+
+  local tmp
+  if [ ! -z "$DicomFile" ] && [ -f "$DicomFile" ] ; then
+    tmp=`getDicomValue $DicomFile "0x0008,0x0022"`
+    echo "AcquisitionDate=\"$tmp\"" >> $ofile
+
+    local myMonthAge=`echo $"(( $(date --date="$tmp" +%s) - $(date --date="$PatientDOB" +%s)  )) / (60*60*24*30)" | bc`
+    local myYearAge=`echo $"(( $(date --date="$tmp" +%s) - $(date --date="$PatientDOB" +%s)  )) / (60*60*24*365.25)" | bc`
+
+    tmp=`getDicomValue $DicomFile "0x0010,0x0040"`
+    echo "PatientSex=\"$tmp\"" >> $ofile
+
+    tmp=`getDicomValue $DicomFile "0x0010,0x1010"`
+    echo "PatientDicomAge=\"$tmp\"" >> $ofile
+    echo "PatientMonthAge=\"$myMonthAge\"" >> $ofile
+    echo "PatientYearAge=\"$myYearAge\"" >> $ofile
+
+    tmp=`getDicomValue $DicomFile "0x0008,0x0070"`
+    echo "ScannerManufacturer=\"$tmp\"" >> $ofile
+
+    tmp=`getDicomValue $DicomFile "0x0008,0x0080"`
+    echo "InstitutionName=\"$tmp\"" >> $ofile
+  fi
+
+
+  echo "" >> $ofile
+  echo "ScriptDir=\"$ScriptDir\"" >> $ofile
+  echo "SrcScriptDir=\"$SrcScriptDir\"" >> $ofile
+
+  echo "" >> $ofile
+  echo "PipelineResultsFile=\"${ScanProcessedDir}/common-processed/${prefix}PipelineResults.txt\"" >> $ofile
+
+  mutexUnlockFile "$lockfile"
+}
+
+#=========================================================
+# UPDATE THE CASE INFO FILE
+#=========================================================
+function WriteCaseInfo()
+{
+  #------------------------------------------
+  # Check that CaseProcessedDir was set
+  #------------------------------------------
+  if [ -z "$CaseProcessedDir" ] || [ ! -d "$CaseProcessedDir" ]; then
+    echo "FATAL ERROR in WriteCaseInfo. CaseProcessedDir is not set or invalid"
+    exit 1;   
+  fi 
+
+  #------------------------------------------
+  # Update the file !
+  #------------------------------------------
+  local ofile="$CaseProcessedDir/CaseInfo.sh"
+
+  local lockfile="$CaseProcessedDir/CaseInfo.lock"
+  mutexLockFile "$lockfile" 
+
+  echo "- Updating <$ofile>"
+
+  echo "#!/bin/sh" > $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "# Case description" >> $ofile
+  echo "# Can be imported in a pipeline script." >> $ofile
+  echo "# Benoit Scherrer, 2013" >> $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "CaseRawDir=\"$CaseRawDir\"" >> $ofile
+  echo "CaseProcessedDir=\"$CaseProcessedDir\"" >> $ofile
+  echo "CaseRelativeDir=\"$CaseRelativeDir\"" >> $ofile
+  echo "" >> $ofile
+  echo "CaseName=\"$CaseName\"" >> $ofile
+  echo "CaseNumber=\"$CaseNumber\"" >> $ofile
+  echo "PatientName=\"$PatientName\"" >> $ofile
+
+  #------------------------------------------
+  # MRN and DOB
+  #------------------------------------------
+  if [ ! -z "$PatientMRN" ]; then
+    echo "MRN=\"$PatientMRN\"" >> $ofile
+  fi
+  if [ ! -z "$PatientDOB" ]; then
+    echo "DOB=\"$PatientDOB\"" >> $ofile
+  fi
+
+  echo "" >> $ofile
+
+  #------------------------------------------
+  # List of scans (Processed dir)
+  #------------------------------------------
+  local scanCount=`find "$CaseRawDir"/ -mindepth 1 -maxdepth 1 -type d -name "${SCANID}*" | wc -l`;
+  echo "ScanCount=${scanCount}" >> $ofile
+
+  local scanFolder;
+  local s=0
+
+  find "$CaseRawDir"/ -mindepth 1 -maxdepth 1 -type d -name "${SCANID}*" | sort -n | while read scanFolder
+  do
+     local folder=`basename $scanFolder`
+
+     s=$(( $s + 1 ))
+     local str=`printf "Scan[%d]=\"%s\"" $s $CaseProcessedDir/$folder`
+     echo $str >> $ofile
+  done
+  
+ 
+
+  mutexUnlockFile "$lockfile"
+}
+
+#========================================================
+# Read the study file
+#========================================================
+# $1: if null, show message
+function ReadDBStudy()
+{
+  if [ ! -f $BaseProcessedDir/DB.sh ]; then
+    if [ -z "$1" ]; then
+      echo "- Initialize $BaseProcessedDir/DB.sh..." 
+    fi
+    echo "" > $BaseProcessedDir/DB.sh
+  fi
+
+  if [ -z "$1" ]; then
+    echo "- Read $BaseProcessedDir/DB.sh..." 
+  fi
+
+  if [ -z "$BaseProcessedDir" ]; then
+    echo "!! Pipeline Error. BaseProcessedDir is not set."
+    echo "!! Settings.txt should be sourced before calling ReadDBStudy."
+    exit 1
+  fi
+
+  local lockfile="$BaseProcessedDir/DB.lock"
+  mutexLockFile "$lockfile" 
+  source "$BaseProcessedDir/DB.sh" || exit 1
+  mutexUnlockFile "$lockfile"
+
+  if [[ -z "$CaseCount" ]] || [[ $CaseCount -eq 0 ]]; then
+    echo
+    echo "---------------------------------------------------"
+    echo "!!!!!!!!!!!!!!!!!!!!! ERROR !!!!!!!!!!!!!!!!!!!!!!!"
+    echo "No case found in DB.sh. The file may be corrupted."
+    echo "You can use DB_RepairAllCases.sh to repair DB.sh"
+    echo "---------------------------------------------------"
+    echo
+    return 1
+  fi
+  return 0
+}
+
+
+#=========================================================
+# NEW PIPELINE VERSION: NOT USED ANYMORE
+# NOW ONLY WRITTEN IN DB_RepairAllCases
+#=========================================================
+function WriteDBStudy()
+{
+  #------------------------------------------
+  # Check the number of cases
+  #------------------------------------------
+  local CaseCount=${#Case[@]}
+  if [ $CaseCount -eq 0 ]; then
+    echo "FATAL ERROR. WriteBaseStudy: CaseCount=0"
+    exit 1;
+  fi
+
+  #------------------------------------------
+  # Check that BaseProcessedDir was set
+  #------------------------------------------
+  if [ -z "$BaseProcessedDir" ] || [ ! -d "$BaseProcessedDir" ]; then
+    echo "FATAL ERROR in WriteDBStudy. BaseProcessedDir is not set or invalid"
+    exit 1;   
+  fi 
+
+  #------------------------------------------
+  # Update the file !
+  #------------------------------------------
+  local ofile="$BaseProcessedDir/DB.sh"
+
+  local lockfile="$BaseProcessedDir/DB.lock"
+  mutexLockFile "$lockfile" 
+
+  echo "- Updating <$ofile>"
+
+  echo "#!/bin/sh" > $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "# Database Description" >> $ofile
+  echo "# Can be imported in a script pipeline." >> $ofile
+  echo "# Benoit Scherrer, 2010" >> $ofile
+  echo "#-------------------------------------------" >> $ofile
+  echo "CaseCount=$CaseCount" >> $ofile
+  for (( c=1; c<=$CaseCount ; c++ ));
+  do
+    CaseFolder=${Case[$c]};
+    str=`printf "Case[%d]=\"%s\"" $c $CaseFolder`
+    echo $str >> $ofile
+  done
+
+  mutexUnlockFile "$lockfile"
+}
+
+
+
+#=========================================================
+# Set the followinf variables:
+# REMARK: To FUSE and test with the following function
+# PatientName
+# CaseName
+# ScanName
+#
+# CaseRawDir
+# CaseProcessedDir
+# CaseRelativeDir
+#
+# Return 1 if error
+#=========================================================
+getCase()
+{
+CaseNumber=$1
+ScanNumber=$2
+echo "LOCATING ${CASEID}$CaseNumber - ${SCANID}${ScanNumber}"
+#-------------------------------------------
+# Check if the RAW exists
+#-------------------------------------------
+CaseName="${CASEID}${CaseNumber}"
+CaseRawDir="$BaseRawDir/$CaseName"
+
+if [ ! -d "$CaseRawDir" ]; then
+    echo "FATAL ERROR. Cannot find the folder $CaseRawDir"
+    echo "Cannot continue."
+    echo
+    return 1
+fi 
+echo "- OK. The directory <$CaseRawDir> exists"
+
+#------------------------------------------------
+# Look for patient name
+#------------------------------------------------
+NbPatientNameFolder=($(find $CaseRawDir/ -mindepth 1 -maxdepth 1 -type d -name "*" | wc -l ))
+if [[ ${NbPatientNameFolder} -ne 1 ]]; then
+  echo "Error. Found ${NbPatientNameFolder} subfolders in <$CaseRawDir.>"
+  echo "There should be a single folder indicating the patient name."
+  return 1
+else
+  CaseRawDir=($(find $CaseRawDir/ -mindepth 1 -maxdepth 1 -type d -name "*" | head -1 ))
+fi
+
+
+PatientName=`basename "$CaseRawDir"`
+
+#-------------------------------------------
+# Set some variables
+#-------------------------------------------
+CaseProcessedDir="$BaseProcessedDir/$CaseName/$PatientName"
+CaseRelativeDir="$CaseName/$PatientName"
+
+echo "- OK. RAW Patient folder is <$CaseRawDir>"
+}
+
+
+#=========================================================
+# Set the followinf variables:
+#
+# PatientName
+# CaseName
+# ScanName
+#
+# CaseRawDir
+# CaseProcessedDir
+# CaseRelativeDir
+#
+# ScanRawDir
+# ScanProcessedDir
+# ScanRelativeDir
+#
+# Return 1 if error
+#=========================================================
+function getCaseScan()
+{
+CaseNumber=$1
+ScanNumber=$2
+
+echo -e "${VT100BOLD}LOCATING ${CASEID}$CaseNumber - ${SCANID}${ScanNumber}${VT100CLEAR}"
+#-------------------------------------------
+# Check if the RAW exists
+#-------------------------------------------
+CaseName="${CASEID}${CaseNumber}"
+CaseRawDir="$BaseRawDir/$CaseName"
+
+if [ ! -d "$CaseRawDir" ]; then
+    echo "FATAL ERROR. Cannot find the folder $CaseRawDir"
+    echo "Cannot continue."
+    echo
+    return 1
+fi 
+echo "- OK. The directory <$CaseRawDir> exists"
+
+#------------------------------------------------
+# Look for patient name
+#------------------------------------------------
+NbPatientNameFolder=($(find $CaseRawDir/ -mindepth 1 -maxdepth 1 -type d -name "*" | wc -l ))
+if [[ ${NbPatientNameFolder} -ne 1 ]]; then
+  echo "Error. Found ${NbPatientNameFolder} subfolders in <$CaseRawDir.>"
+  echo "There should be a single folder indicating the patient name."
+  return 1
+else
+  CaseRawDir=($(find $CaseRawDir/ -mindepth 1 -maxdepth 1 -type d -name "*" | head -1 ))
+fi
+
+
+PatientName=`basename "$CaseRawDir"`
+
+#-------------------------------------------
+# Set some variables
+#-------------------------------------------
+CaseProcessedDir="$BaseProcessedDir/$CaseName/$PatientName"
+CaseRelativeDir="$CaseName/$PatientName"
+
+echo "- OK. RAW Patient folder is <$CaseRawDir>"
+
+#////////////////////////////////////////////////////////
+# RESOLVE SCAN FOLDER
+#////////////////////////////////////////////////////////
+
+#-------------------------------------------
+# Now that we have the patient name,
+# check if the RAW scan folder exists
+#-------------------------------------------
+ScanName=`printf "${SCANID}%02d" $ScanNumber`
+ScanRawDir="$BaseRawDir/$CaseName/$PatientName/$ScanName"
+
+#-------------------------------------------
+# Check that the scan RAW exists
+#-------------------------------------------
+if [ ! -d "$ScanRawDir" ]; then
+
+  local testfolder=`find $BaseRawDir/$CaseName/$PatientName/ -maxdepth 1 -type d -name $ScanName\*`
+  
+  if [[ ! -d $testfolder ]]; then
+    echo "FATAL ERROR. The folder <$ScanRawDir>"
+    echo "(RAW data) does not exists"
+    echo
+    return 1
+  else
+    ScanName=`basename "$testfolder"`
+    ScanRawDir="$testfolder"
+  fi
+fi
+
+#-------------------------------------------
+# Update the scan
+#-------------------------------------------
+ScanProcessedDir="$CaseProcessedDir/$ScanName"
+ScanRelativeDir="$CaseRelativeDir/$ScanName"
+
+echo "- OK. RAW Scan folder is <$ScanRawDir>"
+echo "-     Processed Scan folder is <$ScanProcessedDir>"
+
+return 0
+}
+
+

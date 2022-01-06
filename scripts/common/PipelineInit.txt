@@ -1,0 +1,336 @@
+#!/bin/sh
+#=================================================================
+# UTILITY FUNCTIONS FOR TSC PIPELINES
+# Benoit Scherrer, CRL, 2010
+#-----------------------------------------------------------------
+# This file contains some useful functions to initialize and work 
+# with the analysis pipeline.
+# WARNING: 
+#=================================================================
+
+umask 002
+
+VT100RED='\e[0;31m'
+VT100GREEN='\e[0;32m'
+VT100YELLOW='\e[0;33m'
+VT100BLUE='\e[0;34m'
+VT100MAGENTA='\e[0;35m'
+VT100CYAN='\e[0;36m'
+VT100BOLD='\e[1m'
+
+VT100CLEAR='\e[0m'
+
+#-----------------------------------------------------------------
+# When sourced, first check that the ScriptDir is set and valid
+#-----------------------------------------------------------------
+if [ -z "$ScriptDir" ] || [ ! -d "$ScriptDir" ]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo -e " ERROR. PipelineInit.txt should be sourced only when "
+    echo -e " ScriptDir is set and valid"
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    exit 1;
+fi 
+
+if [ -f "${ScriptDir}/common/Settings.txt" ]; then
+  source ${ScriptDir}/common/Settings.txt || exit 1
+else
+  SCANID="scan"
+  CASEID="Case"
+fi
+
+
+#-----------------------------------------------------------------
+# Prepare the prefix
+#-----------------------------------------------------------------
+if [ ! -z $CaseNumber ] && [ ! -z $ScanNumber ]; then
+  prefix=`printf "c${CaseNumber}_s%02d_" ${ScanNumber}`
+
+elif [ ! -z $CaseNumber ] && [ -z $ScanNumber ]; then
+  prefix="c${CaseNumber}_"
+
+else
+  f=`basename ${ScanProcessedDir}`
+  f2=`echo "$f" | sed -e "s/${CASEID}\([0-9]*\).*/\1/"`
+
+  if [ -z "$f2" ]; then
+    prefix=""
+  elif [ "$f2" == "$f" ]; then
+    prefix=""
+  else
+    prefix="c${f2}_"
+  fi
+fi
+
+#-----------------------------------------------------------------
+# Setup the current directory to 'common-processed' to initialize
+# the cache manager and the settings manager
+#-----------------------------------------------------------------
+if [ ! -z "$ScanProcessedDir" ] && [ -d "$ScanProcessedDir" ]; then
+  folder="$ScanProcessedDir/common-processed"
+else
+  folder="$ScriptDir/../common-processed"
+  folder=`readlink -f "$folder"`
+fi
+mkdir -p "$folder"
+cd "$folder"
+
+CommonProcessedFolder="$folder"
+
+
+#-----------------------------------------------------------------
+# Initialize the cache manager if not already sourced
+#-----------------------------------------------------------------
+if [ -z "$CURRENT_CACHE_FILE" ] ; then
+  CACHEMANAGER_SRC="$ScriptDir/common/CacheManager.txt";
+  CACHE_HEADER="# CRL DATA ANALYSIS PIPELINE "
+  if [ ! -f "${CACHEMANAGER_SRC}" ]; then
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo " ERROR: Cannot find the CacheManager in"
+    echo " `dirname $0`"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    exit 1;
+  fi
+  source "${CACHEMANAGER_SRC}" || exit 1
+  initCache
+fi
+
+#-----------------------------------------------------------------
+# Initialize the settings manager if not already sourced
+#-----------------------------------------------------------------
+if [ -z "$CURRENT_SETTINGS_FILE" ] ; then
+  SETTINGSMANAGER_SRC="$ScriptDir/common/SettingsManager.txt";
+  if [ ! -f "${SETTINGSMANAGER_SRC}" ]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo -e " ERROR: Cannot find the SettingsManager in"
+    echo -e " `dirname $0`"
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    exit 1;
+  fi
+  source "${SETTINGSMANAGER_SRC}" || exit 1
+
+  initSettings
+
+  #----------------------------------------
+  # Check if should update the 00_ModuleSetting file
+  #----------------------------------------
+  if [ -f "$ScriptDir/03.modules/Modules.txt" ]; then
+    hasModuleFileBeenModified
+    if [  $? -eq 1 ]; then
+
+      echo "Regenerate $CURRENT_SETTINGS_FILE."
+      source "$ScriptDir/03.modules/Modules.txt"
+
+      #----------------------------------------
+      # Update time stamp
+      #----------------------------------------
+      TIMESTAMP=`stat -c %Y "$ScriptDir/03.modules/Modules.txt"`
+      addSettingVariable "INTERNALTIMESTAMP" "${TIMESTAMP}"
+    fi
+
+  fi
+fi
+
+#-----------------------------------------------------------------
+# Loads the exports
+#-----------------------------------------------------------------
+CURRENT_PIPELINE_EXPORTS="`pwd`/${prefix}PipelineResults.txt"
+if [ -f "$CURRENT_PIPELINE_EXPORTS" ]; then
+  echo "Read $CURRENT_PIPELINE_EXPORTS"
+  source "$CURRENT_PIPELINE_EXPORTS" || exit 1
+fi
+
+#-----------------------------------------------------------------
+# Check that we have a valid template dir
+#-----------------------------------------------------------------
+GetTemplateLibraryDir ""
+echo "Templates library folder: $TemplateLibraryDir"
+
+GetThirdPartyToolDir ""
+echo "Third party tools folder: $ToolDir"
+
+#---------------------------------------------------------------------
+# SETS THE VALUE OF A VARIABLE IN THE EXPORT FILE
+#
+# $1 : Key
+# $2 : Value
+#
+# EXAMPLE: exportVariable "T1W" "$val"
+#---------------------------------------------------------------------
+function exportVariable()
+{
+  if [ -z "$CURRENT_PIPELINE_EXPORTS" ]; then
+    echo "ERROR. CURRENT_PIPELINE_EXPORTS is null".
+    exit 1;
+  fi
+
+  if [ ! -f "$CURRENT_PIPELINE_EXPORTS" ]; then
+    echo "#!/bin/sh" > "$CURRENT_PIPELINE_EXPORTS"
+    echo "#=================================================================" >> "$CURRENT_PIPELINE_EXPORTS"
+    echo "# ANALYSIS PIPELINE" >> "$CURRENT_PIPELINE_EXPORTS"
+    echo "#=================================================================" >> "$CURRENT_PIPELINE_EXPORTS"
+    chmod a+rw "$CURRENT_PIPELINE_EXPORTS"
+  fi
+
+  #-------------------------------------------------
+  # If $BaseRawDir is defined, makes potential path
+  # not absolute but relative
+  #-------------------------------------------------
+  local val="$2"
+
+  if [ ! -z "${BaseRawDir}" ] && [ ! -z "$val" ]; then
+    local d=`echo "$BaseRawDir" | sed 's/\//\\\\\//g'`
+    val=`echo "$val" | sed "s/${d}/\\${BaseRawDir}/g"`
+ 
+    d=`readlink -f "$BaseRawDir"`
+    if [ ! -z "$d" ]; then
+      d=`echo "$d" | sed 's/\//\\\\\//g'`
+      val=`echo "$val" | sed "s/${d}/\\${BaseRawDir}/g"`
+    fi
+  fi 
+ 
+  #-------------------------------------------------
+  # If $BaseProcessedDir is defined, makes potential path
+  # not absolute but relative
+  #--------------------------------------------
+  if [ ! -z "$BaseProcessedDir" ] && [ ! -z "$val" ]; then
+    local d=`echo "$BaseProcessedDir" | sed 's/\//\\\\\//g'`
+    val=`echo "$val" | sed "s/${d}/\\${BaseProcessedDir}/g"`
+
+    d=`readlink -f "$BaseProcessedDir"`
+    if [ ! -z "$d" ]; then
+      d=`echo "$d" | sed 's/\//\\\\\//g'`
+      val=`echo "$val" | sed "s/${d}/\\${BaseProcessedDir}/g"`
+    fi
+  fi 
+
+  local prevval=`grep "^${1}=" "$CURRENT_PIPELINE_EXPORTS" | sed -e 's/.*=\(\S*\).*/\1/g'`
+  if [ -z "${prevval}" ]; then
+    echo "$1=\"$val\"" >> "$CURRENT_PIPELINE_EXPORTS" ;
+  else
+    local v=`echo "$val" | sed 's/\//\\\\\//g'`		   #  Corrects the string for sed: convert '/' to '\/'
+    sed -i "s/^$1=\(\S*\).*/$1=\"$v\"/" "$CURRENT_PIPELINE_EXPORTS" ; 
+  fi
+
+  read -r $1 <<< "$2";   # Not $val on purpose
+}
+
+
+#---------------------------------------------------------------------
+# $1: title
+#---------------------------------------------------------------------
+function showStepTitle()
+{
+  echo -e "${VT100BLUE}-------------------------------------------------"
+  echo -e " $1"
+
+  if [ ! -z $CaseNumber ] && [ ! -z $ScanNumber ]; then
+    echo -e " (Case $CaseNumber scan $ScanNumber)"
+  elif [ ! -z $CaseNumber ] && [ -z $ScanNumber ]; then
+    echo -e " (Case $CaseNumber)"
+  fi
+
+  echo -e "-------------------------------------------------${VT100CLEAR}"
+}
+
+function showStepInfo()
+{
+  echo
+  echo -e "${VT100MAGENTA}==== $1 ====${VT100CLEAR}"
+}
+
+
+#-----------------------------------------------------------------
+# $1: variable name
+# $2: cache manager step name
+#
+# ex: checkIfSkip "SKIP_EDDYCURRENTCOR" "${DWIid}_EDDY_CORRECTION"
+#-----------------------------------------------------------------
+function checkIfSkip()
+{
+  local vname="$1"
+  local vcachename="$2_LASTVALUE_OF_$1"
+  local vstepname="$2"
+
+  #--------------------------------------------------
+  # Check if the variable vname has been modified
+  #--------------------------------------------------
+  local vcachevalue=${!vcachename}
+  local value=${!vname}
+  if [ ! -z "$vcachevalue" ] && [ ! -z "$value" ] && [ $vcachevalue -ne $value ]; then
+    echo "- $1 has been modified"
+    setCachedValue "${vstepname}_DONE" "0"
+  fi
+
+
+  #--------------------------------------------------
+  # If not set, by default don t skip
+  #--------------------------------------------------
+  if [ -z "$value" ]; then
+    value=0
+  fi
+
+  #--------------------------------------------------
+  # Update the last value in the cache
+  #--------------------------------------------------
+  setCachedValue "${vcachename}" "${value}"
+  exportVariable "$1_VALUE" "${value}"		# Just to know...
+
+  if [ ${value} -eq 0 ]; then
+    return 0;
+  else
+    return 1;
+  fi
+
+
+}
+
+
+#-----------------------------------------------------------------
+# Check if a set of variables are set
+#
+# $1: comma-separated list of variables to check
+#
+# If one of the variable is not set, show an error message and exit 1
+#-----------------------------------------------------------------
+function checkIfVariablesAreSet()
+{
+  local tmp=`echo $1 | sed s/,/\\\n/g`
+  local PREVIFS=$IFS
+  IFS=$'\n'
+  local ok=1
+  for vname in $tmp
+  do
+    if [ ! -z "$vname" ]; then
+      value=${!vname}
+      if [ -z "$value" ]; then
+         echo "ERROR. The variable <$vname> is not set." 
+         ok=0;
+      fi
+    fi
+  done
+  IFS=$PREVIFS
+
+  if [ $ok -eq 0 ]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo -e " ERROR."
+    echo -e " The pipeline is stopped."
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    exit 1;
+  fi
+}
+
+
+function getDataForAnalysis()
+{
+  if [[ ! -z "$ScanProcessedDir" ]] && [[ -d "$ScanProcessedDir/data_for_analysis" ]]; then
+    echo "$ScanProcessedDir/data_for_analysis"
+  elif [[ ! -z "$ScanRawDir" ]] && [[ -d "$ScanRawDir/data_for_analysis" ]]; then
+    echo "$ScanRawDir/data_for_analysis"
+  elif [[ ! -z "${DataForAnalysisDir}" ]] && [[ -d "${DataForAnalysisDir}" ]]; then
+    echo "${DataForAnalysisDir}"
+  else
+    echo "`dirname $0`/../../data_for_analysis"
+  fi
+}
+
+

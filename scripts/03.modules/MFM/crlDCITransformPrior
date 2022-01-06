@@ -1,0 +1,171 @@
+#!/bin/sh
+CLEAR='\e[0m'
+BOLD='\e[1m'
+RED='\e[31m'
+BLUE='\e[0;34m'
+
+prior=$1
+trsf=$2
+output=$3
+refDTI=$4
+nthreads=$5
+
+if [[ -z "$nthreads" ]]; then
+  nthreads=10
+fi
+
+#if [ -n "$(find ${output}* | head -n 1)" ]; then
+#    echo "Error. A file or directory starting with $output already exists." 
+#    echo "Please select a different output name or remove all files starting with the selected name first."
+#    exit;
+#fi
+
+function exitIfError()
+{
+  if [ $? -ne 0 ]; then
+    echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    if [ -z "$1" ]; then
+      echo " ERROR during the execution of the last tool."
+    else
+      echo " ERROR during the execution of $1."  
+    fi
+    echo " The pipeline is stopped."
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${CLEAR}"
+    exit 1;
+  fi
+}
+
+function getAbsolutePriorFile()
+{
+  local f="$1"
+  local prevdir=`pwd`
+  cd `dirname $prior`
+  f=`readlink -f "$f"`
+  cd $prevdir
+  echo "$f"
+}
+
+#------------------------------------------------
+# Get number of tensors
+#------------------------------------------------
+numFiles=`cat ${prior} | wc -l`
+let numOthers=numFiles-2
+numTensors=`bc <<< "scale=0;($numOthers/4)"`
+
+echo "- Number of tensors in the prior: $numTensors"
+
+#------------------------------------------------
+# Get temporary directory
+#------------------------------------------------
+tmpDir=`dirname $output`
+r=0
+#r=$RANDOM
+#while [ -f $tmpDir/tmp_${r}.nrrd -o -f $tmpDir/tmp_${r}.txt ]
+#do
+#    r=$RANDOM
+#done
+
+
+#------------------------------------------------
+# Initializes...
+#------------------------------------------------
+refAnat=$tmpDir/tmp_${r}.nrrd
+itkCreateImage -b 1 -o $refAnat -g $refDTI
+exitIfError "itkCreateImage"
+
+refMFM=$tmpDir/tmp_${r}.txt
+echo $refDTI>$refMFM
+echo $refAnat>>$refMFM
+
+# Parsing prior
+let frac_location=${numTensors}+1
+let alpha_iso_location=${numTensors}+2
+
+mfm=$tmpDir/tmp_${r}_mfm.txt
+param=$tmpDir/tmp_${r}_param.txt
+tmpOut=$tmpDir/tmp_${r}_out
+
+rm -f $mfm
+rm -f $param
+rm -f $tmpOut
+
+#------------------------------------------------
+# Get the exp_t? and fractions of the prior
+# to get the mfm file
+#------------------------------------------------
+for ((k=0; k < $frac_location; k++))
+do
+    let kk=k+1
+    f=`sed "${kk}q;d" $prior`
+    echo `getAbsolutePriorFile "$f"` >> $mfm
+done
+echo -e "${BOLD}- MFM:${CLEAR}"
+cat $mfm
+
+#------------------------------------------------
+# Get the alpha_iso file
+#------------------------------------------------
+alpha_iso=`sed "${alpha_iso_location}q;d" $prior`
+alpha_iso=`getAbsolutePriorFile "$alpha_iso"`
+
+#------------------------------------------------
+# Get the other params
+#------------------------------------------------
+for ((k=${alpha_iso_location}+1; k<= $numFiles; k++))
+do
+    f=`sed "${k}q;d" $prior`
+    echo `getAbsolutePriorFile "$f"` >> $param
+done
+echo -e "${BOLD}- PARAM:${CLEAR}"
+cat $param
+
+#------------------------------------------------
+# Align alpha_iso
+#------------------------------------------------
+echo
+echo "- Run crlBlockMatchingRegistration -N -n 0 -e 0 -s 0 -p $nthreads -i $trsf -f $alpha_iso -r $refAnat -o ${output}_alpha_iso -I linear -t dense"
+crlBlockMatchingRegistration -N -n 0 -e 0 -s 0 -p $nthreads -i $trsf -f $alpha_iso -r $refAnat -o ${output}_alpha_iso -I linear -t dense
+exitIfError "crlBlockMatchingRegistration"
+
+mv ${output}_alpha_iso_FinalS.nrrd ${output}_alpha_iso.nrrd 
+echo "${output}_alpha_iso.nrrd" > ${output}.txt
+
+#------------------------------------------------
+# Align MFM and parameters
+#------------------------------------------------
+echo
+echo "- Run crlDCIParameterResample -i $mfm -j $param -t $trsf -g $refAnat -n $numTensors -o $tmpOut -p $nthreads"
+crlDCIParameterResample -i $mfm -j $param -t $trsf -g $refAnat -n $numTensors -o $tmpOut -p 1  #$nthreads 
+exitIfError "crlDCIParameterResample"
+
+#------------------------------------------------
+# Formating the transformed prior for input in crlMFMEstimate
+#------------------------------------------------
+for ((i=0; i<numTensors; i++))
+do
+    #echo "crlCastSymMatDoubleToFloat ${tmpOut}_ten${i}.nrrd ${tmpOut}_ten${i}.nrrd"
+    crlCastSymMatDoubleToFloat ${tmpOut}_ten${i}.nrrd ${tmpOut}_ten${i}.nrrd
+    
+    #echo "crlTensorLog -i ${tmpOut}_ten${i}.nrrd -o ${output}_t${i}.nrrd"
+    crlTensorLog -i ${tmpOut}_ten${i}.nrrd -o ${output}_t${i}.nrrd 
+    exitIfError "crlTensorLog"
+
+
+    mv ${tmpOut}_ten${i}_param0.nrrd ${output}_alpha_${i}.nrrd
+    
+    mv ${tmpOut}_ten${i}_param1.nrrd ${output}_tau_${i}.nrrd
+    
+    mv ${tmpOut}_ten${i}_param2.nrrd ${output}_sigma_${i}.nrrd
+    echo ${output}_alpha_${i}.nrrd >> ${output}.txt
+    echo ${output}_t${i}.nrrd >> ${output}.txt
+    echo ${output}_tau_${i}.nrrd >> ${output}.txt
+    echo ${output}_sigma_${i}.nrrd >> ${output}.txt
+done
+
+# Remove temporary files
+#rm $refMFM
+#rm $refAnat
+
+exit 0
+
+

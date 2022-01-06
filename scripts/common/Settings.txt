@@ -1,0 +1,16 @@
+#!/bin/sh
+
+BaseRawDir=""
+DataForAnalysisDir="/fileserver/fastscratch/serge/code/mwf/experiments/s20211014_contralesions/data/serge/control1/crl/data_for_analysis"
+BaseProcessedDir="/fileserver/fastscratch/serge/code/mwf/experiments/s20211014_contralesions/data/serge/control1/crl/"
+SrcScriptDir="/fileserver/fastscratch/serge/code/mwf/experiments/s20211014_contralesions/data/serge/control1/crl/scripts"
+
+
+PipelineTemplatesDir="/fileserver/commondataprocessed/atlases/pipelinetemplates/"
+ThirdPartySoftwareDir="/opt/el7/pkgs/pipeline-thirdpartytools/"
+
+SCANID="scan"
+CASEID="case"
+
+ACRmode="0"
+

@@ -1,0 +1,294 @@
+#!/bin/sh
+
+#=================================================================
+# ConvertFromDICOM Pipeline
+# Benoit Scherrer, CRL, 2010
+#-----------------------------------------------------------------
+# 
+#=================================================================
+
+if [ -f "`dirname $0`/../common/Settings.txt" ]; then
+  source "`dirname $0`/../common/Settings.txt"
+fi
+
+if [ -z "${CASEID}" ]; then
+  CASEID="Case"
+fi
+
+umask 002
+
+prevdir=`pwd`
+
+#------------------------------------------
+# Load the scan informations if available
+#------------------------------------------
+if [ -f "`dirname $0`/../../ScanInfo.sh" ]; then
+  echo "- Reading `dirname $0`/../../ScanInfo.sh"
+  source "`dirname $0`/../../ScanInfo.sh" || exit 1
+
+  if [ ! -z $CaseNumber ] && [ ! -z $ScanNumber ]; then
+    prefix=`printf "c%s-s%02d_" $CaseNumber $ScanNumber`
+  elif [ ! -z $CaseNumber ] && [ -z $ScanNumber ]; then
+    prefix=`printf "c%s_" $CaseNumber`
+  else
+    f=`basename ${ScanProcessedDir}`
+    f2=`echo "$f" | sed -e "s/${CASEID}\([0-9]*\).*/\1/"`
+
+    if [ -z "$f2" ]; then
+      prefix=""
+    elif [ "$f2" == "$f" ]; then
+      prefix=""
+    else
+      prefix="c${f2}_"
+    fi
+  fi
+
+elif [ -f "`dirname $0`/../common/CacheManager.txt" ]; then
+  prefix=""
+  ScriptDir="`dirname $0`/.."
+else
+  prefix=""
+  ScriptDir="`dirname $0`"
+fi
+
+echo "- Prefix: $prefix"
+
+#---------------------------------------------------------------
+# INCLUDE THE CACHE MANAGER
+#---------------------------------------------------------------
+CACHEMANAGER_SRC="$ScriptDir/common/CacheManager.txt";
+CACHE_HEADER="# DICOM_TO_NRRDS "
+if [ ! -f "${CACHEMANAGER_SRC}" ]; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo " ERROR: Cannot find the CacheManager in"
+  echo " $ScriptDir"
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  exit 1;
+fi
+source "${CACHEMANAGER_SRC}" || exit 1
+source "$ScriptDir/common/PipelineUtils.txt" || exit 1
+source $ScriptDir/common/PipelineInit.txt || exit 1
+
+cd "$prevdir"
+initCache
+
+#---------------------------------------------------------------
+# Check if arguments are in the cache or in the command line
+#---------------------------------------------------------------
+if [ -z "$DICOM_DIR" ] || [ -z "$OUTPUTDIR_NRRDS" ]; then
+  if [ $# -le 1 ]; then
+   echo "--------------------------------------"
+   echo " Convert From DICOM"
+   echo " (c) Benoit Scherrer, 2009"
+   echo " benoit.scherrer@childrens.harvard.edu"
+   echo ""
+   echo " Converts the content of a DICOM "
+   echo " directory."
+   echo "--------------------------------------"
+   echo " ConvertFromDICOM [DICOMDIR] [OUTDIR]"
+   echo ""
+   exit 1
+  fi
+fi
+
+#---------------------------------------------------------------
+# Update DICOM_DIR and OUTPUTDIR_NRRDS if necessary
+#---------------------------------------------------------------
+if [ ! -z "$1" ] || [ ! -z "$2" ]; then
+ OUTPUTDIR_NRRDS="$2"
+ DICOM_DIR="$1"
+fi
+setCachedValue "DICOM_DIR" "$DICOM_DIR"
+setCachedValue "OUTPUTDIR_NRRDS" "$OUTPUTDIR_NRRDS"
+
+#---------------------------------------------------------------
+# INITIALIZE SOME VARIABLES
+#---------------------------------------------------------------
+OUTDIRS_PREFIX=""
+OUTDIRS_SUFFIX=""
+
+mkdir -p "${OUTPUTDIR_NRRDS}"
+cd "${OUTPUTDIR_NRRDS}"
+
+#------------------------------------------------
+# Trick to list folders while beeing compatible
+# with folder names containing spaces
+#------------------------------------------------
+PREVIFS=$IFS
+IFS=$'\n'
+DicomFolders=($(find "${DICOM_DIR}"/* -type d))
+nbdir=${#DicomFolders[@]}
+IFS=$PREVIFS
+
+#------------------------------------------------
+# If no subdirectory, just try to run 
+# on the directory itself
+#------------------------------------------------
+if [[ ${nbdir} -eq 0 ]]; then
+  crlConvertDICOMMOSAIC -d "${DICOM_DIR}" -p "${OUTPUTDIR_NRRDS}/$prefix"
+ 
+else
+#------------------------------------------------
+# Else, convert each folder separately
+#------------------------------------------------
+  for (( i=0; i<${nbdir} ; i++ ));
+  do
+    #------------------------------------------------
+    # Get and simplify the directory name
+    #------------------------------------------------
+   d="${DicomFolders[$i]}"
+    echo 
+    echo
+    echo "==============================================================="
+    echo "Folder $(($i+1))/${nbdir} "
+    echo "$d"
+    echo "==============================================================="
+
+    if [[ $d == *dataforanalysis* ]] || [[ $d == *data_for_analysis* ]] || [[ $d == *nrrds* ]]; then
+      echo "  Invalid folder"
+      continue
+    fi
+
+    # Check the number of files
+    nbFiles=`ls -l "$d"/* | wc -l`
+    if [ $nbFiles -eq 0 ]; then
+      echo "  No file in the folder"
+      continue
+    fi
+
+    BASENAME=`basename "${d}"`
+    SCANID=`echo ${BASENAME} | sed -e "s/.*_\([0-9]*\)$/\1/"`	# Takes the _[0-9]* at the end
+    SCANID2=`echo ${BASENAME} | sed -e "s/^\([0-9]*\)_.*/\1/"`	# Takes the _[0-9]* at the beginning
+
+    if [ ! -z "$SCANID" ] && [ "$SCANID" != "$BASENAME" ] && [ "$SCANID2" == "$BASENAME" ] ; then
+      SCANID=`printf "%02d_" $SCANID`
+      BASENAME=`echo ${BASENAME} | sed -e "s/\(.*\)_[0-9]*/\1/"`	# Improve name by removing _[0-9]* at the end// NO NO don t do that
+      BASENAME="${SCANID}${BASENAME}"
+    fi
+
+
+    #------------------------------------------------
+    # Improve the name of the step to avoid errors
+    #------------------------------------------------
+    STEP_NAME=`echo "${BASENAME}" | sed "s/ /_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed 's/!/_/g'`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\[/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\]/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/+/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/-/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/(/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/)/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/=/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/&/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/*/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/%/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/$/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/#/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/?/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/@/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/;/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/:/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/,/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\./_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\'/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\"/_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\</_/g"`
+    STEP_NAME=`echo "${STEP_NAME}" | sed "s/\>/_/g"`
+    STEP_NAME="DICOM_${STEP_NAME}"
+
+    #------------------------------------------------
+    # Check if it has already been converted
+    #------------------------------------------------
+    CACHE_DoStepOrNot "$STEP_NAME" 1.01
+    if [  $? -eq 0 ]; then
+      echo "- OK for $BASENAME"
+      echo
+    else
+      echo "Working on <${BASENAME}>"
+ 
+      #------------------------------------------------
+      # If not, convert
+      #------------------------------------------------
+      DIRNAME="${OUTDIRS_PREFIX}${BASENAME}${OUTDIRS_SUFFIX}"
+      mkdir -p "${OUTPUTDIR_NRRDS}/${DIRNAME}"
+
+
+      if [[ ${BASENAME} == *RESTING* ]] || [[ ${BASENAME} == *FMRI*  ]]; then
+        crlConvertDICOMMOSAIC -d "${d}" -p "${OUTPUTDIR_NRRDS}/${DIRNAME}/$prefix" -f 1
+     
+        f=`find "${OUTPUTDIR_NRRDS}/${DIRNAME}"/* -type d -iname "*RESTING*" -or -type d -iname "*FMRI*"`
+        mv -i $f/*.nii ${OUTPUTDIR_NRRDS}/${DIRNAME}/
+
+        if [ ! -z "$f" ]; then
+          rmdir "$f"
+        fi
+
+      else
+        crlConvertDICOMMOSAIC -d "${d}" -p "${OUTPUTDIR_NRRDS}/${DIRNAME}/$prefix"
+      fi
+    
+      #exitIfError "crlConvertDICOMMOSAIC"
+
+      #------------------------------------------------
+      # If old dir structure (just numbers) rename
+      # the folder name with a more meaningful name
+      #------------------------------------------------
+      test=`echo ${DIRNAME} | sed -e "s/.*\([0-9]*\).*/\1/"`
+      if [ "$test" == "${DIRNAME}" ]; then
+    
+        # TRY TO RENAME THE DIRECTORY
+        if [ `find ${OUTPUTDIR_NRRDS}/${DIRNAME} -regex ".*.nrrd" | wc -l` -ne 0 ]; then 
+          #NAME = EXTRACTED SRING FROM 'CASE0XX' to the last occurence of '_'
+          NEWDNAME=`find ./${OUTPUTDIR_NRRDS}/${DIRNAME} -regex ".*.nrrd" | sed '1 !d'`
+ 
+          NEWDNAME=`echo ${NEWDNAME} | sed -e "s/.*\/${DIRNAME}\/\(.*\)/\1/"`
+          echo $NEWDNAME
+
+          # IMPROVE THE NAME EXTRACTION FOR SOME DIRECTORY BY CUTTING AFTER '__'
+          NEWDNAME=`echo ${NEWDNAME} | sed -e "s/\(.*\)__\(.*\)/\1/"`
+
+          # IMPROVE THE NAME EXTRACTION FOR SOME DIRECTORY BY CUTTING AFTER '_ep_'
+          NEWDNAME=`echo ${NEWDNAME} | sed -e "s/\(.*\)_ep_\(.*\)/\1/"`
+
+          # IMPROVE THE NAME EXTRACTION FOR SOME DIRECTORY BY CUTTING AFTER '_ep_'
+          NEWDNAME=`echo ${NEWDNAME} | sed -e "s/\([^\.]*\).*/\1/"`
+
+
+          #--- MAKE IT COMPATIBLE WITH THE STRUCTURE FOLDER NAMES ---
+          NEWDNAME=`echo ${NEWDNAME} | sed -e "s/T2_TSE_Axial/AXFSET2/"`
+          # (Not necessary for MPRAGE, DTI)
+
+      	  NEWDNAME=`echo ${NEWDNAME} | sed -e "s/c[0-9]*-s[0-9]*_\(.*\)/\1/"`
+
+        
+          if [ -d "${OUTPUTDIR_NRRDS}/${NEWDNAME}" ]; then
+            n=2;
+            while [ -d "${OUTPUTDIR_NRRDS}/${NEWDNAME}_#$n" ]
+            do
+               n=$[$n+1];
+            done
+            NEWDNAME="${NEWDNAME}_#$n"
+          fi
+      
+
+          echo "Rename ${DIRNAME} to ${NEWDNAME}"
+          NEWDNAME="${NEWDNAME}_$i"
+          mv ${OUTPUTDIR_NRRDS}/${DIRNAME} ${OUTPUTDIR_NRRDS}/${NEWDNAME}
+          DIRNAME="${NEWDNAME}"
+        fi
+
+      fi
+
+      DEP=`find "${d}/" -type f -name \* | head -1`
+      PROD=`find "${OUTPUTDIR_NRRDS}/${DIRNAME}"/* -type f | head -1`
+
+      CACHE_StepHasBeenDone "$STEP_NAME" "$DEP" "${PROD}"
+
+    fi
+
+  done
+fi
+
+
+
+

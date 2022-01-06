@@ -1,0 +1,123 @@
+div.title{
+font-size: 1.9em;
+font-weight: 600;
+color: #555555;
+text-align: center;
+}
+
+h1 {
+font-size: 1.7em;
+font-weight: 600;
+color: #666666;
+}
+
+div.img{
+  margin: 5px;
+  padding: 5px;
+  border: 1px solid #eee;
+  height: auto;
+  width: 400px;
+  text-align: center;
+}
+div.img img{
+  display: inline;
+  margin: 5px;
+  width: 400px;
+}
+
+
+div.imgfloat200{
+  margin: 5px;
+  padding: 5px;
+  border: 1px solid #eee;
+  height: auto;
+  width: 200px;
+  float: left;
+  text-align: center;
+}
+div.imgfloat200 img{
+  display: inline;
+  margin: 5px;
+  width: 200px;
+}
+
+div.imgfloat300{
+  margin: 5px;
+  padding: 5px;
+  border: 1px solid #eee;
+  height: auto;
+  width: 300px;
+  float: left;
+  text-align: center;
+}
+div.imgfloat300 img{
+  display: inline;
+  margin: 5px;
+  width: 300px;
+}
+
+div.imgfloat400{
+  margin: 5px;
+  padding: 5px;
+  border: 1px solid #eee;
+  height: auto;
+  width: 400px;
+  float: left;
+  text-align: center;
+}
+div.imgfloat400 img{
+  display: inline;
+  margin: 5px;
+  width: 400px;
+}
+
+div.imgfloat600{
+  margin: 5px;
+  padding: 5px;
+  border: 1px solid #eee;
+  height: auto;
+  width: 600px;
+  float: left;
+  text-align: center;
+}
+div.imgfloat600 img{
+  display: inline;
+  margin: 5px;
+  width: 600px;
+}
+
+
+div.endfloat {
+  clear: both;
+}
+
+/* Magnify on hover */
+a.smallpic, a.smallpic:visited { display:block; width:250px; text-decoration:none; background:#ffffff; top:0; left:0; border:0;}
+a img {border:0;}
+a.smallpic:hover {text-decoration:none; background-color:#000000; color:#000000;}
+a .largepic {display:block; position:absolute; width:0; height:0; border:0; top:0; left:0;}
+a.smallpic:hover .largepic {display:block; position:absolute; top: 10px; left:10px; width:600px; height:auto; } 
+
+div.imgcaption {
+  text-align: center;
+  width: 250px;
+  word-wrap: break-word;
+  font-size: 0.8em;
+}
+
+
+pre{
+background-color: #fbfbfb;
+border: solid 1px #ccc;
+padding: 8px;
+margin: 5px;
+}
+
+.code {
+background-color: #eee;
+border: solid 1px #ccc;
+padding: 3px;
+margin: 5px;
+font-family: "Courier New", Courier, monospace;
+font-size: 1em;
+}

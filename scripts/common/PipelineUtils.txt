@@ -1,0 +1,617 @@
+#!/bin/sh
+#=================================================================
+# UTILITY FUNCTIONS FOR TSC PIPELINES
+# Benoit Scherrer, CRL, 2010
+#-----------------------------------------------------------------
+# This file contains some useful functions to initialize and work 
+# with the analysis pipeline.
+# WARNING: 
+#=================================================================
+
+VT100RED='\e[0;31m'
+VT100GREEN='\e[0;32m'
+VT100YELLOW='\e[0;33m'
+VT100BLUE='\e[0;34m'
+VT100MAGENTA='\e[0;35m'
+VT100CYAN='\e[0;36m'
+
+VT100BOLD='\e[1m'
+VT100CLEAR='\e[0m'
+
+export PATH=${PATH}:/opt/x86_64/pkgs/teem/nightly/20070207/gcc-release/bin/
+
+function run_tool()
+{
+  echo -e "${VT100BLUE}${@}${VT100CLEAR}"
+  $@
+}
+
+function checkExists()
+{
+  which "$1" > /dev/null
+  if [ $? -ne 0 ]; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+function checkExistsAndShowError()
+{
+  checkExists $1
+  if [[ $? -ne 0 ]]; then
+    echo
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo -e " ${VT100RED}ERROR. Cannot find '$1' necessary for the pipeline${VT100CLEAR}"
+    if [[ ! -z "$2" ]]; then
+      echo -e " ${VT100RED}$2${VT100CLEAR}"
+    fi
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo
+    return 1
+  fi
+  return 0
+}
+
+function checkRunnableAndShowError()
+{
+  local f=`which $1`
+  if [[ ! -f "$f" ]]; then
+    echo
+    echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${CLEAR}"
+    echo -e " ${RED}ERROR. Cannot find $1 ${CLEAR}"
+    if [[ ! -z "$2" ]]; then
+      echo -e " ${VT100RED}$2${VT100CLEAR}"
+    fi
+    echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${CLEAR}"
+    echo
+    return 1
+  fi
+
+  local r=`ldd $f | grep "not found"`
+  if [[ ! -z "$r" ]]; then
+    echo
+    echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${CLEAR}"
+    echo -e " ${RED}ERROR. Cannot run $1 ${CLEAR}"
+    if [[ ! -z "$2" ]]; then
+      echo -e " ${VT100RED}$2${VT100CLEAR}"
+    fi
+    echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${CLEAR}"
+    echo
+    return 1
+  fi
+
+  return 0
+}
+
+function checkFolderExistsOrShowError()
+{
+  if [[ ! -d $1 ]]; then
+    echo
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo -e " ${VT100RED}ERROR. Cannot find the folder <$1> ${VT100CLEAR}"
+    if [[ ! -z "$2" ]]; then
+      echo -e " ${VT100RED}$2${VT100CLEAR}"
+    fi
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo
+    return 1
+  fi
+  return 0
+}
+
+function checkOptionAndShowError()
+{
+  local binary=$1
+  local opt=$2
+  local advhelp=$3
+
+  local res=`$binary --help |& grep "$opt"`
+  if [[ -z "$res" ]]; then
+    echo
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo -e " ${VT100RED}ERROR. The version of '$binary' is too old. ${VT100CLEAR}"
+    if [[ ! -z "$advhelp" ]]; then
+      echo -e " ${VT100RED}$advhelp${VT100CLEAR}"
+    fi
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo
+    return 1
+  fi
+  return 0
+}
+
+function checkIfPipelineCanRun()
+{
+  echo -e "${VT100BOLD}CHECK ENVIRONMENT${VT100CLEAR}"
+
+  kernelversion=`uname -r`
+  if [[ $kernelversion == *el5* ]]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo -e "${VT100RED} ERROR. CentOS 5 detected. ${VT100CLEAR}"
+    echo -e "${VT100RED} A number of tools are compiled only for CentOS 7.${VT100CLEAR}"
+    echo -e "${VT100RED} Cannot continue.${VT100CLEAR}"
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    return 1
+  fi
+  if [[ $kernelversion == *el6* ]]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    echo -e "${VT100RED} ERROR. CentOS 6 detected. ${VT100CLEAR}"
+    echo -e "${VT100RED} A number of tools are compiled only for CentOS 7.${VT100CLEAR}"
+    echo -e "${VT100RED} Cannot continue.${VT100CLEAR}"
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    return 1
+  fi
+  
+  GetThirdPartyToolDir 
+
+  checkExistsAndShowError tee || return 1
+  checkExistsAndShowError crlImageInfo "CANNOT find the crkit necessary for the pipeline" || return 1
+
+  # Use checkRunnableAndShowError because dependency may not be installed (tend: libpng12, crlDCIEstimate: tbb, ...)
+  checkRunnableAndShowError tend "This is a temporary dependency but is still needed for now." || return 
+  checkRunnableAndShowError crlDCIEstimate || return 1
+  checkRunnableAndShowError itkCreateImage || return 1
+  checkRunnableAndShowError crlDWIFindArtifactedImages || return 1
+  checkRunnableAndShowError itkApplyTrsfSerie || return 1
+
+  local crkitdir=`which crlImageInfo`
+  crkitdir=`dirname "${crkitdir}"`
+  crkitdir=`dirname "${crkitdir}"`
+
+  checkExistsAndShowError crlMaskImage2 "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20141204/bin/crkit-env.sh)" || return 1
+  checkExistsAndShowError crlResampler2 "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20141204/bin/crkit-env.sh)" || return 1
+  checkExistsAndShowError crlDWIMotionCorrection "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20150129/crkit/bin/crkit-env.sh)" || return 1
+  checkExistsAndShowError crlDCIEstimate "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlDCIEstimate (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20150129/crkit/bin/crkit-env.sh)" || return 1
+
+  checkExistsAndShowError crlProbabilisticGMMSTAPLE "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlProbabilisticGMMSTAPLE (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20150611/crkit/bin/crkit-env.sh)" || return 1
+  checkExistsAndShowError crlModifyIntensityAndSegmentationUsingNonDiffeomorphicMatching "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlModifyIntensityAndSegmentationUsingNonDiffeomorphicMatching (>=1.6) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20150611/crkit/bin/crkit-env.sh)" || return 1
+  
+  checkExistsAndShowError crlDWIHighRes "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlDWIHighRes (>=1.6, >=26/10/2016) <<\n\n (e.g., /opt/x86_64/pkgs/crkit/nightly/20161026/crkit/bin/crkit-env.sh)" || return 1
+  checkExistsAndShowError crlScalarImageAlgebra "\n Current CRKIT dir: $crkitdir\n This version of crkit does not have crlScalarImageAlgebra (it was probably compiled without Qt).\n   >> Please use a version of the pipeline that has crlScalarImageAlgebra" || return 1
+
+  checkExistsAndShowError crlSVGMM "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlSVGMM (>=1.6, >=04/05/2017) <<\n\n (e.g., use /opt/x86_64/pkgs/crkit/nightly/20170405/crkit/bin/crkit-env.sh)" || return 1
+  checkOptionAndShowError crlSVGMM "v1.1.2" "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlSVGMM (>=1.6, >=07/20/2017) <<\n\n (e.g., use /opt/x86_64/pkgs/crkit/nightly/20170926/crkit/bin/crkit-env.sh)" || return 1
+  
+  checkExistsAndShowError crlMOPS "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlSVGMM (>=1.6, >=04/05/2017) <<\n\n (e.g., use /opt/x86_64/pkgs/crkit/nightly/20170405/crkit/bin/crkit-env.sh)" || return 1
+  checkOptionAndShowError crlMOPS "Brain Parenchyma Labels" "\n Current CRKIT dir: $crkitdir\n This version of crkit is probably too old.\n   >> Please use a newer release of crkit that contains crlSVGMM (>=1.6, >=02/09/2018) <<\n\n (e.g., use /opt/x86_64/pkgs/crkit/nightly/20180209/crkit/bin/crkit-env.sh)" || return 1
+
+  checkExistsAndShowError topup ">> Please install FSL in the PATH" || return 1
+
+  SCRIPTPATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
+  source $SCRIPTPATH/Settings.txt || return 1
+
+  if [[ ! -z "$BaseRawDir" ]]; then
+    checkFolderExistsOrShowError "$BaseRawDir" "(BaseRawDir)" || return 1
+  fi
+
+  checkFolderExistsOrShowError "$BaseProcessedDir" "(BaseProcessedDir)" || return 1
+  checkFolderExistsOrShowError "$PipelineTemplatesDir" "(PipelineTemplatesDir)" || return 1
+
+  echo "  OK"
+  return 0
+}
+
+
+#---------------------------------------------------------------------
+# Get the max of two floats
+#---------------------------------------------------------------------
+function getMaxFloat()
+{
+  if [ $(echo "$1 > $2"|bc) -eq 1 ]; then 
+    echo "$1"
+  else
+    echo "$2"
+  fi
+}
+
+#---------------------------------------------------------------------
+# Get the max of two floats
+#---------------------------------------------------------------------
+function getMinFloat()
+{
+  if [ $(echo "$1 < $2"|bc) -eq 1 ]; then 
+    echo "$1"
+  else
+    echo "$2"
+  fi
+}
+
+
+#-----------------------------------------------------------------
+# Returns 1 if ok, 0 if not enough disk space
+#-----------------------------------------------------------------
+function checkDiskSpace()
+{
+# TO FINISH TO FINISH
+  s=`df . | head -3`
+  s=`echo "$s" | sed -e 's/\s*[0-9]*\s*[0-9]*\s*\([0-9]*\).*/\1/g'`
+
+}
+
+
+function getFromDicomTag()
+{
+  DCM="$1"
+  TAG="$2"
+  
+  s=`dcdump "$DCM" 2>&1 | grep "$TAG"`
+  if [ ! -z "$s" ]; then
+    s=`echo "$s" | sed -e 's/.*VL=<[0-9x]*>.*<\(.*\)>/\1/'`
+    echo "$s"
+  else
+    echo "NotInDicom"
+  fi
+}
+
+#-----------------------------------------------------------------
+# If the error flag is ON, Show a message and exit
+#
+# $1: if defined the name of the tool that generated the error
+#-----------------------------------------------------------------
+function exitIfError()
+{
+  if [ $? -ne 0 ]; then
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    if [ -z "$1" ]; then
+      echo -e " ERROR during the execution of the last tool."
+    else
+      echo -e " ERROR during the execution of $1."  
+    fi
+    echo -e " The pipeline is stopped."
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    exit 1;
+  fi
+}
+
+#-----------------------------------------------------------------
+# Show a message and exit
+#
+# $1: if defined the message
+#-----------------------------------------------------------------
+function errorAndExit()
+{
+    echo -e "${VT100RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    if [[ -z "$1" ]]; then
+      echo -e " ERROR"
+    else
+      echo -e " ERROR: $1."  
+    fi
+    echo -e " The pipeline is stopped."
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${VT100CLEAR}"
+    exit 1;
+ 
+}
+
+#-----------------------------------------------------------------
+# Run a tool by first showing the command line in blue
+# If there is a -o [file] in the commandline, then also creates
+# [file].cmdline.txt to keep tracking of what was run
+#-----------------------------------------------------------------
+function run_tool()
+{
+  local outputLogFile=""
+
+  local args=("$@")
+  local arg=""
+  local k=0
+  while (( k<$# ))
+  do
+      arg=${args[$k]}
+      let k=k+1; 
+      
+      if [[ "$arg" == "-o" ]]; then  
+        outputLogFile=${args[$k]};
+        break;
+      fi
+  done
+
+  echo -e "${VT100BLUE}${@}${VT100CLEAR}"
+
+  if [[ ! -z "$outputLogFile" ]]; then
+    echo -e "${@}" > ${outputLogFile}.cmdline.txt
+  fi
+
+  $@
+}
+
+
+#-----------------------------------------------------------------
+# Creates a subdirectory only if it doesn t exists yet
+#
+# $1: Name of the subdirectory to create
+#-----------------------------------------------------------------
+function mkSubDir()
+{
+  if [ ! -d "$1" ]; then
+    mkdir -p "$1"
+  fi
+}
+
+#------------------------------------------------------
+# Converts a "CaseXXX" directory string to the case number
+# 
+# $1: "CaseXXX" directory string
+#------------------------------------------------------
+function CaseFolderToNumber()
+{
+  local strNum=`echo "$1" | sed -e "s/${CASEID}\([0-9]*\).*/\1/"`
+  strNum=`echo "$strNum" | sed 's/^0*//g'`
+  return `expr $strNum`
+}
+
+#------------------------------------------------------
+# Converts a case number to a "CaseXXX" directory string
+# 
+# $1: "CaseXXX" directory string
+#------------------------------------------------------
+function ConvertCaseNumberToFolder()
+{
+  local numCase=$1
+
+  if [ $numCase -ge 1000 ]; then
+    echo `printf "${CASEID}%06d" $numCase`
+  else
+    echo `printf "${CASEID}%03d" $numCase`
+  fi
+}
+
+#------------------------------------------------------
+# Backup the cache!
+# Input: $1 backup folder (MUST exists already)
+#------------------------------------------------------
+function GetLogFileName()
+{
+  #-------------------------------------------
+  # Check if backup folder exists
+  #-------------------------------------------
+  if [[ -z "$1" ]] || [[ ! -d "$1" ]]; then
+    echo ""
+    return 1
+  fi
+
+  #------------------------
+  # Get prefix name for log
+  #------------------------
+  local logprefix="$1/`date +'%Y%m%d_%Hh%Mm%Ss'`"
+  local username=`id -u -n`
+  if [ $? -eq 0 ]; then
+    logprefix="${logprefix}_${username}"
+  fi
+
+  echo "$logprefix"
+  return 0
+}
+
+#------------------------------------------------------
+# Get the directory for a specified template library.
+#
+# Warning 1 : Use exit 1 if not found
+# Warning 2 : This function returns value by creating (or modifying) the TemplateLibraryDir variable
+#             (this method was chosen to be able to echo various messages if needed)
+#             
+# Input
+#   $1 (optional) : template subfolder. If empty, just return the parent folder of all template libraries
+# Output
+#   ${TemplateLibraryDir} : the template dir requested
+#------------------------------------------------------
+function GetTemplateLibraryDir()
+{
+  local subfolder="$1"
+
+  SCRIPTDIR=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
+  source $SCRIPTDIR/Settings.txt || exit 1
+
+  if [[ -z "$PipelineTemplatesDir" ]]; then
+    if [[ -d "/common/data/processed/atlases/pipelinetemplates/" ]]; then
+      echo -e "${VT100MAGENTA}WARNING. The variable PipelineTemplatesDir is not set in Settings.txt"
+      echo -e "  Use default directory (/common/data/processed/atlases/pipelinetemplates/)${VT100CLEAR}"
+      echo
+      PipelineTemplatesDir="/common/data/processed/atlases/pipelinetemplates/"
+      TemplateLibraryDir="${PipelineTemplatesDir}"
+    else
+      echo -e "${VT100RED}-------------------------------------------------------------------"
+      echo -e "ERROR. The variable PipelineTemplatesDir is not set in Settings.txt"
+      echo
+      echo -e "Fix the pipeline installation and/or define PipelineTemplatesDir in:"
+      echo -e " $SCRIPTDIR/common/Settings.txt"
+      echo -e "Cannot continue"
+      echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+      echo
+      TemplateLibraryDir=""
+      exit 1
+    fi
+  elif [[ ! -d "$PipelineTemplatesDir" ]]; then
+    echo -e "${VT100RED}-------------------------------------------------------------------"
+    echo -e "ERROR. Cannot find the pipeline template dir:"
+    echo -e " PipelineTemplatesDir=$PipelineTemplatesDir"
+    echo -e "that is defined in $SCRIPTDIR/common/Settings.txt"
+    echo -e "Cannot continue"
+    echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+    echo
+    PipelineTemplatesDir=""
+    TemplateLibraryDir=""
+    exit 1
+  elif [[ ! -z "$subfolder" ]] && [[ ! -d "$PipelineTemplatesDir/$subfolder" ]]; then
+    echo -e "${VT100RED}-------------------------------------------------------------------"
+    echo -e "ERROR. Cannot find the subfolder '$subfolder' in: "
+    echo -e " PipelineTemplatesDir=$PipelineTemplatesDir"
+    echo -e "Something is wrong.Cannot continue"
+    echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+    echo
+    TemplateLibraryDir=""
+    exit 1
+  else
+    TemplateLibraryDir=`readlink -f $PipelineTemplatesDir/$subfolder`
+  fi
+}
+
+
+#------------------------------------------------------
+# Get the directory for a specified third party tool.
+# IN HERE BUT NOT USED YET
+#
+# Warning 1 : Use exit 1 if not found
+# Warning 2 : This function returns value by creating (or modifying) the ToolDir variable
+#             
+# Input
+#   $1 (optional) : tool subfolder
+# Output
+#   ${ToolDir} : the tool dir requested
+#------------------------------------------------------
+function GetThirdPartyToolDir()
+{
+  local subfolder="$1"
+
+  SCRIPTDIR=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
+  source $SCRIPTDIR/Settings.txt || exit 1
+
+  #------------------------------------------------------
+  # Set default value for ThirdPartySoftwareDir if needed
+  #------------------------------------------------------
+  if [[ -z "$ThirdPartySoftwareDir" ]]; then
+    if [[ -d "/opt/el7/pkgs/pipeline-thirdpartytools/" ]]; then
+      echo -e "${VT100MAGENTA}WARNING. The variable ThirdPartySoftwareDir is not set in Settings.txt"
+      echo -e "  Use default directory (/opt/el7/pkgs/pipeline-thirdpartytools/)${VT100CLEAR}"
+      echo
+      ThirdPartySoftwareDir="/opt/el7/pkgs/pipeline-thirdpartytools/"
+      ToolDir="${ThirdPartySoftwareDir}"
+    else
+      echo -e "${VT100RED}-------------------------------------------------------------------"
+      echo -e "ERROR. The variable ThirdPartySoftwareDir is not set in Settings.txt"
+      echo
+      echo -e "Fix the pipeline installation and/or define ThirdPartySoftwareDir in:"
+      echo -e " $SCRIPTDIR/common/Settings.txt"
+      echo -e "Cannot continue"
+      echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+      echo
+      ToolDir=""
+      exit 1
+    fi
+  fi
+
+  #------------------------------------------------------
+  # Now check
+  #------------------------------------------------------
+  if [[ ! -d "$ThirdPartySoftwareDir" ]]; then
+    echo -e "${VT100RED}-------------------------------------------------------------------"
+    echo -e "ERROR. Cannot find the pipeline template dir:"
+    echo -e " ThirdPartySoftwareDir=$ThirdPartySoftwareDir"
+    echo -e "that is defined in $SCRIPTDIR/common/Settings.txt"
+    echo -e "Cannot continue"
+    echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+    echo
+    ThirdPartySoftwareDir=""
+    ToolDir=""
+    exit 1
+
+  elif [[ ! -z "$subfolder" ]] && [[ ! -d "$ThirdPartySoftwareDir/$subfolder" ]]; then
+    echo -e "${VT100RED}-------------------------------------------------------------------"
+    echo -e "ERROR. Cannot find the subfolder '$subfolder' in: "
+    echo -e " ThirdPartySoftwareDir=$ThirdPartySoftwareDir"
+    echo -e "Something is wrong.Cannot continue"
+    echo -e "-------------------------------------------------------------------${VT100CLEAR}"
+    echo
+    ToolDir=""
+    exit 1
+
+  else
+    ToolDir=`readlink -f $ThirdPartySoftwareDir/$subfolder`
+  fi
+}
+
+
+#------------------------------------------------------
+# Setup what is necessary to have access to third party tools,
+# ie 
+#------------------------------------------------------
+function setupThirdPartyTools()
+{
+  GetThirdPartyToolDir ""		# Returns in $ToolDir a valid folder, or exit
+
+  if [[ ! -f $ToolDir/setup_environment.sh ]]; then
+    errorAndExit "Cannot find $ToolDir/setup_environment.sh"
+  fi
+
+  source $ToolDir/setup_environment.sh || errorAndExit "Error while sourcing $ToolDir/setup_environment.sh"
+}
+
+#------------------------------------------------------
+# Backup the cache!
+# Input: $1 backup folder (MUST exists already)
+#------------------------------------------------------
+function BackupCache()
+{
+  echo
+  echo "Backup Cache in <$1>"
+
+  #-------------------------------------------
+  # Check if backup folder exists
+  #-------------------------------------------
+  if [[ -z "$1" ]] || [[ ! -d "$1" ]]; then
+    echo -e "${VT100RED}ERROR. Cannot find backup folder <$1>${VT100CLEAR}"
+    return 1
+  fi
+
+  #-------------------------------------------
+  # Backup the cache before anything else
+  #-------------------------------------------
+  local bkpupfolder="$1"
+
+  #------------------------
+  # Get prefix name for log
+  #------------------------
+  local logprefix="$bkpupfolder/`date +'%Y%m%d_%Hh%Mm%Ss'`"
+  local username=`id -u -n`
+  if [ $? -eq 0 ]; then
+    logprefix="${logprefix}_${username}"
+  fi
+
+  #------------------------
+  # Backup 00_Cache
+  #------------------------
+  local bkpupcache="${logprefix}_00_Cache.txt"
+  echo "  - $bkpupcache"
+  cp "$bkpupfolder/../00_Cache.txt" "$bkpupcache"
+  if [ $? -ne 0 ]; then
+    echo -e "${VT100RED}ERROR! ERROR! ERROR! ERROR! ERROR! ERROR!"
+    echo -e "Cannot backup:"
+    echo -e "     $bkpupfolder/../00_Cache.txt"
+    echo -e " TO: $bkpupcache"
+    echo 
+    echo -e "Cannot continue. The pipeline will NOT run."
+    echo -e "ERROR! ERROR! ERROR! ERROR! ERROR! ERROR!${VT100CLEAR}"
+    return 1
+  fi
+
+  #------------------------
+  # Backup 00_PipelineResults.txt
+  #------------------------
+  
+  local pres=`ls $bkpupfolder/../*PipelineResults.txt | head -1`
+  if [[ ! -z "$pres" ]] && [[ -f "$pres" ]] ; then
+    local tmp=`basename $pres`
+
+    local bkpupPRes="${logprefix}_${tmp}"
+
+    echo "  - $bkpupPRes"
+    cp "$pres" "$bkpupPRes"
+
+    if [ $? -ne 0 ]; then
+      echo -e "${VT100RED}ERROR! ERROR! ERROR! ERROR! ERROR! ERROR!"
+      echo -e "Cannot backup:"
+      echo -e "     $pres"
+      echo -e " TO: $bkpupPRes"
+      echo 
+      echo -e "Cannot continue. The pipeline will NOT run."
+      echo -e "ERROR! ERROR! ERROR! ERROR! ERROR! ERROR!${VT100CLEAR}"
+      return 1
+    fi
+
+
+  fi
+  echo
+  return 0
+}
+
+

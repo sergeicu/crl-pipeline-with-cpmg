@@ -1,0 +1,52 @@
+
+#======================================================================================
+# Change some files without altering the timestamp
+#======================================================================================
+PREVIFS=$IFS
+IFS=$'\n'
+files=($(find ./ -type f -name '*_tensors1T.nrrd' ))
+nbfiles=${#files[@]}
+IFS=$PREVIFS
+
+if [ $nbfiles -eq 0 ]; then
+  echo "No files"
+else
+  #------------------------------------------------
+  # NOW for all folder convert to DICOM
+  #------------------------------------------------
+  for (( i=0; i<${nbfiles} ; i++ ));
+  do
+    #------------------------------------------------
+    # Get and simplify the directory name
+    #------------------------------------------------
+    f="${files[$i]}" 
+    f=`readlink -f "$f"`
+
+    echo $f
+    ls -lh $f
+    timestamp=`stat -c %y "$f"`
+    echo $timestamp
+    crlTensorClean -z -i "$f" -o "$f"
+    touch -m -c -d "$timestamp" "$f"
+    timestamp=`stat -c %y "$f"`
+    echo $timestamp
+    ls -lh $f
+
+    echo
+    #
+  done
+fi
+
+#======================================================================================
+# Search text inside files
+#======================================================================================
+grep -rnw 'dir' -e "pattern"
+
+#======================================================================================
+# Check error through pipe
+#======================================================================================
+
+sh "${scriptdir}/01.anatomical/anatomical-pipeline.sh"  | tee -a $logfile  
+if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
+  exit
+fi

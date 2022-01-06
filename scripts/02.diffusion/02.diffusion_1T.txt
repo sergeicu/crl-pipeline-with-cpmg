@@ -1,0 +1,128 @@
+#!/bin/sh
+
+
+function RunDWIPipeline_1T
+{
+  local prevdir=`pwd`
+
+  echo "========================================="
+  echo " 1T PROCESSING:"
+  echo "========================================="
+
+  #---------------------------------------------------
+  # Create the processed subdir
+  #---------------------------------------------------
+  DWIid=`basename $1`
+  DWIid=`echo "${DWIid}" | sed "s/ /_/g"`
+  DWIProcessedDir="$ScanProcessedDir/common-processed/diffusion/${DWIid}/06-1T"
+  mkdir -p "$DWIProcessedDir" || exit 1
+ 
+  #---------------------------------------------------
+  # Check that the prepare script has been successfull
+  #---------------------------------------------------
+  file="${DWIid}_RMASKED_NHDR"
+  file=${!file}
+  if [ -z "$file" ] || [ ! -f "$file" ]; then
+    echo "FATAL ERROR. Invalid file <$file.>"
+    exit 1
+  fi
+
+
+#=========================================================
+#  1T
+#=========================================================
+showStepTitle "1T tensor estimation with tend"
+
+OFOLDER="$DWIProcessedDir/01-tensors1T"
+mkdir -p "$OFOLDER"
+
+CACHE_DoStepOrNot "${DWIid}_TEND" "1.01"
+if [  $? -eq 0 ]; then
+  echo "- Use previously estimated tensors."
+  echo
+else
+  ifile="${DWIid}_MASKED_NHDR"
+  ifile=${!ifile}
+
+  #-------------------------------------------------
+  # Estimate the tensors
+  #------------------------------------------------- 
+  echo "- Estimate tensors"
+  tend estim -B kvp -knownB0 false -i "$ifile" -o "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exitIfError "tend"
+  crlTensorClean -z -i "${OFOLDER}/${prefix}tensors1T.nrrd" -o "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exitIfError "crlTensorClean"
+
+  #-------------------------------------------------
+  # Compute scalar parameters
+  #------------------------------------------------- 
+  echo "- Create rgb image"
+  crlTensorToRGB "${OFOLDER}/${prefix}tensors1T.nrrd" "${OFOLDER}/${prefix}tensors1T_colorFA.nrrd"
+  exitIfError "crlTensorToRGB"
+
+  echo "- Create scalar parameters maps"
+  crlTensorScalarParameter -a "${OFOLDER}/${prefix}tensors1T_AD.nrrd" -f "${OFOLDER}/${prefix}tensors1T_FA.nrrd" -m "${OFOLDER}/${prefix}tensors1T_MD.nrrd" -r "${OFOLDER}/${prefix}tensors1T_RD.nrrd" "${OFOLDER}/${prefix}tensors1T.nrrd" 
+  exitIfError "crlTensorScalarParameter"
+
+  exportVariable "${DWIid}_TENSOR_1T" "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exportVariable "${DWIid}_TENSOR_1T_ColorFA" "${OFOLDER}/${prefix}tensors1T_colorFA.nrrd"
+  exportVariable "${DWIid}_TENSOR_1T_FA" "${OFOLDER}/${prefix}tensors1T_FA.nrrd"
+  exportVariable "${DWIid}_TENSOR_1T_MD" "${OFOLDER}/${prefix}tensors1T_MD.nrrd"
+  exportVariable "${DWIid}_TENSOR_1T_RD" "${OFOLDER}/${prefix}tensors1T_RD.nrrd"
+  exportVariable "${DWIid}_TENSOR_1T_AD" "${OFOLDER}/${prefix}tensors1T_AD.nrrd"
+
+  CACHE_StepHasBeenDone "${DWIid}_TEND" "$ifile" "${OFOLDER}/${prefix}tensors1T.nrrd"
+fi
+
+
+
+
+#=========================================================
+#  From resampeld DWI 
+#=========================================================
+showStepTitle "1T tensor estimation from resampled DWI"
+
+OFOLDER="$DWIProcessedDir/02-tensors1T-from-rDWI"
+mkdir -p "$OFOLDER"
+
+CACHE_DoStepOrNot "${DWIid}_RTEND" "1.01"
+if [  $? -eq 0 ]; then
+  echo "- Use previously estimated tensors."
+  echo
+else
+  ifile="${DWIid}_RMASKED_NHDR"
+  ifile=${!ifile}
+
+  #-------------------------------------------------
+  # Estimate the tensors
+  #------------------------------------------------- 
+  echo "- Estimate tensors"
+  tend estim -B kvp -knownB0 false -i "$ifile" -o "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exitIfError "tend"
+  crlTensorClean -z -i "${OFOLDER}/${prefix}tensors1T.nrrd" -o "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exitIfError "crlTensorClean"
+
+  #-------------------------------------------------
+  # Compute scalar parameters
+  #------------------------------------------------- 
+  echo "- Create rgb image"
+  crlTensorToRGB "${OFOLDER}/${prefix}tensors1T.nrrd" "${OFOLDER}/${prefix}tensors1T_colorFA.nrrd"
+  exitIfError "crlTensorToRGB"
+
+  echo "- Create scalar parameters maps"
+  crlTensorScalarParameter -a "${OFOLDER}/${prefix}tensors1T_AD.nrrd" -f "${OFOLDER}/${prefix}tensors1T_FA.nrrd" -m "${OFOLDER}/${prefix}tensors1T_MD.nrrd" -r "${OFOLDER}/${prefix}tensors1T_RD.nrrd" "${OFOLDER}/${prefix}tensors1T.nrrd" 
+  exitIfError "crlTensorScalarParameter"
+
+  exportVariable "${DWIid}_RTENSOR_1T" "${OFOLDER}/${prefix}tensors1T.nrrd"
+  exportVariable "${DWIid}_RTENSOR_1T_ColorFA" "${OFOLDER}/${prefix}tensors1T_colorFA.nrrd"
+  exportVariable "${DWIid}_RTENSOR_1T_FA" "${OFOLDER}/${prefix}tensors1T_FA.nrrd"
+  exportVariable "${DWIid}_RTENSOR_1T_MD" "${OFOLDER}/${prefix}tensors1T_MD.nrrd"
+  exportVariable "${DWIid}_RTENSOR_1T_RD" "${OFOLDER}/${prefix}tensors1T_RD.nrrd"
+  exportVariable "${DWIid}_RTENSOR_1T_AD" "${OFOLDER}/${prefix}tensors1T_AD.nrrd"
+
+  CACHE_StepHasBeenDone "${DWIid}_RTEND" "$ifile" "${OFOLDER}/${prefix}tensors1T.nrrd"
+fi
+
+
+}
+

@@ -1,0 +1,200 @@
+#!/bin/sh
+#=====================================================================
+# BASH SCRIPTS - REPORT MANAGER
+# Benoit Scherrer, CRL, 2013
+#---------------------------------------------------------------------
+# Define useful functions to create latex reports
+#=====================================================================
+umask 002
+
+
+
+#---------------------------------------------------------------------
+# 
+#---------------------------------------------------------------------
+function generateLatexHeader()
+{
+  local f="$1"
+  local title=`latexEnsureValidString "$2"`
+
+  echo "\\documentclass[a4paper]{article}" > $f
+  echo "\\usepackage[margin=0.5in]{geometry}" >> $f
+  echo "\\usepackage{graphicx}" >> $f
+  echo "\\begin{document}" >> $f
+  echo "\\title{${title}}" >> $f
+  echo "\\maketitle" >> $f
+}
+
+function generateLatexEnd()
+{
+  local f="$1"
+
+  echo "\\end{document}" >> $f
+}
+
+function latexEnsureValidString()
+{
+  local str=`echo "$1" | sed 's/_/\\\_/g'`
+  echo "$str"
+}
+
+function latexAddText()
+{
+  local f="$1"
+  local t=`latexEnsureValidString "$2"`
+
+  echo "$t" >> $f
+}
+
+function latexBeginCenter()
+{
+  local f="$1"
+  echo "\\begin{center}"  >> $f
+}
+
+function latexEndCenter()
+{
+  local f="$1"
+  echo "\\end{center}"  >> $f
+}
+
+
+function latexBeginTabular()
+{
+  local f="$1"
+  local params="$2"
+  echo "\\begin{tabular}{$params}"  >> $f
+}
+
+function latexEndTabular()
+{
+  local f="$1"
+  echo "\\end{tabular}"  >> $f
+}
+
+
+function latexBeginTwoColumnFigure()
+{
+  local f="$1"
+
+  echo "\\begin{figure}[!ht]" >> $f
+  echo "\\center" >> $f
+  echo "\\begin{tabular}{cc}" >> $f
+}
+
+function latexInsertTwoColumnFigure()
+{
+  local f="$1"
+  local img1="$2"
+  local cap1="$3"
+  local size1="$4"
+  local img2="$5"
+  local cap2="$6"
+  local size2="$7"
+
+  echo "\\includegraphics[$size1]{$img1} & \\includegraphics[$size1]{$img2} \\\\ " >> $f
+  echo " $cap1 & $cap2 \\\\ " >> $f
+}
+
+function latexEndTwoColumnFigure()
+{
+  local f="$1"
+  local caption="$2"
+
+  echo "\\end{tabular}" >> $f
+  echo "\\caption{ $caption }" >> $f
+  echo "\\end{figure}" >> $f
+}
+
+
+function plotBeginPyPlot()
+{
+  local f=$1
+  
+  echo "#!/usr/bin/python" > $f
+  echo "import sys" >> $f
+  echo "from numpy import *" >> $f
+  echo "import matplotlib.pyplot as plt" >> $f
+}
+
+function plotAddPyPlot()
+{
+  local f=$1
+  local datafile=$2
+  local style=$3
+  local label=$4
+
+  echo "data = genfromtxt(\"$datafile\")" >> $f
+  echo "x=data[:,0]" >> $f
+  echo "y=data[:,1]" >> $f
+  echo "plt.plot(x,y,\"$style\",label=\"$label\")">> $f
+}
+
+function plotAddPyErrorBarPlot()
+{
+  local f=$1
+  local datafile=$2
+  local opts=$3
+
+  echo "data = genfromtxt(\"$datafile\")" >> $f
+  echo "x=data[:,0]" >> $f
+  echo "y=data[:,1]" >> $f
+  echo "e=data[:,2]" >> $f
+  echo "plt.errorbar(x,y,yerr=e,$opts)">> $f
+}
+
+function plotAddLegend()
+{
+  local f=$1
+  local opts=$2
+
+  echo "plt.legend($opts);">> $f
+}
+
+function plotSetXAxesLimits()
+{
+  local f=$1
+  local x1=$2
+  local x2=$3
+
+  echo "plt.xlim($x1, $x2);">> $f
+}
+
+function plotSetYAxesLimits()
+{
+  local f=$1
+  local y1=$2
+  local y2=$3
+
+  echo "plt.ylim($y1, $y2);">> $f
+}
+
+function plotYLabel()
+{
+  local f=$1
+  local title=$2
+  local opts=$3
+
+  echo "plt.ylabel(\"$title\",$opts);">> $f
+}
+
+function plotXLabel()
+{
+  local f=$1
+  local title=$2
+  local opts=$3
+
+  echo "plt.xlabel(\"$title\",$opts);">> $f
+}
+
+function plotSavePyPlot()
+{
+  local f=$1
+  local picturefile=$2
+  echo "plt.savefig(\"$picturefile\");" >> $f
+
+  python $f
+
+  echo "Saved $picturefile"
+}
+

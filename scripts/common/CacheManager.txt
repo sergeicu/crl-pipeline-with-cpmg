@@ -1,0 +1,658 @@
+#!/bin/sh
+#=====================================================================
+# BASH SCRIPTS - CACHE MANAGER
+# Benoit Scherrer, CRL, 2010
+# VERSION: 1.0.2 - 06/14/2010
+#---------------------------------------------------------------------
+# Define useful functions to create a cache file for CRL pipelines.
+# A cache file can keep track of the value of variables. It saves 
+# these values in the file 00_Cache.txt as a set of KEY=VALUE elements.
+#
+# Functions:
+#  - initCache
+#  - getCachedValue
+#  - setCachedValue
+#  - isAlreadyIsCache
+#
+#
+# Also, for pipelines, a set of functions allow to run processing only
+# if the dependencies have been modified.
+#
+# Functions:
+#  - CACHE_DoStepOrNot
+#  - CACHE_StepHasBeenDone
+#  - CACHE_HasFileBeenModified
+#  - CACHE_UpdateFileTimeStamp
+#
+#
+#  EXAMPLE OF SCRIPT USING CacheManager.txt
+#  (see the documentation for each function)
+#  ----------------------------------------
+#  #!/bin/sh
+#  source `dirname $0`/CacheManager.txt || exit 1
+#
+#  CACHE_DoStepOrNot "SEG"
+#  if [ $? -eq 1 ]; then
+#     echo "GENERATE THE STEP"
+#
+#     CACHE_StepHasBeenDone "SEG" "00_Global.txt,testcache.txt"
+#  else
+#     echo "DO NOT GENERATE. The dependencies have not been modified. "
+#  fi
+#=====================================================================
+umask 002
+
+VT100RED='\e[0;31m'
+VT100GREEN='\e[0;32m'
+VT100YELLOW='\e[0;33m'
+VT100BLUE='\e[0;34m'
+VT100MAGENTA='\e[0;35m'
+VT100CYAN='\e[0;36m'
+
+VT100CLEAR='\e[0m'
+
+#---------------------------------------------------------------------
+# If the cache file exists, includes it
+#---------------------------------------------------------------------
+CURRENT_CACHE_FILE="`pwd`/00_Cache.txt"
+if [ -f "$CURRENT_CACHE_FILE" ]; then
+   source "$CURRENT_CACHE_FILE" || exit 1
+fi
+
+
+#------------------------------------------------------
+# Measures the elapsed time
+# Use:
+#   t=$(measureElapsedTime) 
+#   (...)
+#   str=$(measureElapsedTime $t)
+#------------------------------------------------------
+function measureElapsedTime()
+{
+    if [[ $# -eq 0 ]]; then
+        echo $(date '+%s')
+    else
+        local  stime=$1
+        local etime=$(date '+%s')
+
+        if [[ -z "$stime" ]]; then stime=$etime; fi
+
+        local dt=$((etime - stime))
+        local ds=$((dt % 60))
+        local dm=$(((dt / 60) % 60))
+        local dh=$((dt / 3600))
+        printf '%d:%02d:%02d' $dh $dm $ds
+    fi
+}
+
+#---------------------------------------------------------------------
+# GETS THE CORRECTED (IF NECESSARY) NAME FOR A VARIABLE
+#
+# $1: Var Name
+#
+# RETURNS: The corrected name
+#
+# EXAMPLE:
+#   VARNAME=`ensureValidVariable "$VARNAME"`
+#   echo $VARNAME
+#---------------------------------------------------------------------
+function ensureValidKey()
+{
+  local VAR_NAME=`echo "$1" | sed 's/-/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/#/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/\./_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/\//_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/*/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/\^/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/!/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/\[/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/\]/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/+/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/(/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/)/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/=/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/&/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/%/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/?/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/@/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/;/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/:/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/,/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/</_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/>/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/'/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/"/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/\\\$/_/g'`
+
+  echo "${VAR_NAME}"
+}
+
+#---------------------------------------------------------------------
+# GETS THE VALUE OF A CACHED VARIABLE (OR EMPTY STRING IF NOT FOUND)
+#
+# $1: Key
+#
+# RETURNS: The string value associed with the key
+#
+# EXAMPLE:
+#   INPUTDATA=`getCachedValue "INPUT_DATA"`
+#   echo $INPUTDATA
+#---------------------------------------------------------------------
+function getCachedValue()
+{
+    # Since the cache file is included, just returns its value
+    local  __KEY=`ensureValidKey "$1"`
+    echo "${!__KEY}"
+}
+
+#---------------------------------------------------------------------
+# CHECKS IF A VARIABLE IS ALREADY IN CACHE
+#
+# $1: Key
+#
+# RETURNS: 1 if yes, 0 if not
+#
+# EXAMPLE: can be tested with the following code:
+#   isAlreadyIsCache "MYKEY";
+#   if [ $? -ne 0 ]; then
+#     echo "in cache"
+#   fi
+#---------------------------------------------------------------------
+function isAlreadyIsCache()
+{
+# DO NOT USE THE FOLLOWING LINE BUT ACTUALLY CHECK IN THE 00_CACHE file
+#  val=`getCachedValue "$1"`
+  local  KEY=`ensureValidKey "$1"`
+
+  local cachefile="$CURRENT_CACHE_FILE"
+  local val=`grep "^${KEY}=" "$cachefile" | sed -e 's/.*=\(\S*\).*/\1/g'`
+
+  if [ -z "${val}" ]; then
+    return 0;
+  else
+    return 1;
+  fi
+}
+
+#---------------------------------------------------------------------
+# SETS THE VALUE OF A VARIABLE IN CACHE (AND ALSO IN THE CURRENT SESSION)
+#
+# $1 : Key
+# $2 : Value
+#
+# EXAMPLE: setCachedValue "MyKey" "MyVal"
+#---------------------------------------------------------------------
+function setCachedValue()
+{
+  local KEY=`ensureValidKey "$1"`
+  local val="$2"
+
+  #-------------------------------------------------
+  # If $BaseRawDir is defined, makes potential path
+  # not absolute but relative
+  #-----------------------------------------------
+  if [ ! -z "$BaseRawDir" ]; then
+    local d=`echo "$BaseRawDir" | sed 's/\//\\\\\//g'`
+    val=`echo "$val" | sed "s/${d}/\\${BaseRawDir}/g"`
+
+    d=`readlink -f "$BaseRawDir"`
+    if [ ! -z "$d" ]; then
+      d=`echo "$d" | sed 's/\//\\\\\//g'`
+      val=`echo "$val" | sed "s/${d}/\\${BaseRawDir}/g"`
+    fi
+  fi 
+
+  #-------------------------------------------------
+  # If $BaseProcessedDir is defined, makes potential path
+  # not absolute but relative
+  #---------------------------------------
+  if [ ! -z "$BaseProcessedDir" ]; then
+    local d=`echo "$BaseProcessedDir" | sed 's/\//\\\\\//g'`
+    val=`echo "$val" | sed "s/${d}/\\${BaseProcessedDir}/g"`
+
+    d=`readlink -f "$BaseProcessedDir"`
+    if [ ! -z "$d" ]; then
+      d=`echo "$d" | sed 's/\//\\\\\//g'`
+      val=`echo "$val" | sed "s/${d}/\\${BaseProcessedDir}/g"`
+    fi
+  fi
+
+  #-------------------------------------------------
+  # Now write into the cache
+  #-------------------------------------------------
+  initCache					   # Ensures that the cache is initialized
+  isAlreadyIsCache "$KEY"			   # Checks if the key=value has already been set
+  if [  $? -ne 0 ]; then			   # If yes modifies it
+    local v=`echo "$val" | sed 's/\//\\\\\//g'`	   #  Corrects the string for sed: convert '/' to '\/'
+    v=`echo "$v" | sed 's/&/\\\&/g'`               #  Corrects the string for sed: convert '&' to '\&'
+    sed -i "s/^${KEY}=\(\S*\).*/${KEY}=\"$v\"/" "$CURRENT_CACHE_FILE" ; 
+  else						   # If not, adds it
+    echo "${KEY}=\"$val\"" >> "$CURRENT_CACHE_FILE" ;
+  fi
+
+  read -r ${KEY} <<< "$2";	# Not $val on purpose
+}
+
+#---------------------------------------------------------------------
+# INITIALIZE THE CACHE
+#
+# $1 : if not null, and if the cache already exists, ask if it should
+#      be reinitialized
+#
+# EXAMPLE:  initCache
+#           initCache "force"
+#---------------------------------------------------------------------
+function initCache()
+{
+  local do_it=0;
+  if [ -f "$CURRENT_CACHE_FILE" ]; then
+    if [ ! -z $1 ]; then
+      echo "The cache file 00_Cache.txt already exists.";
+      echo "Do you want to reinitialize it ? (y/n)";
+      read -n 1 force_reinit
+      echo 
+      if [ "$force_reinit" = "y" ]; then
+        do_it=1;
+      fi
+    fi
+  else
+    do_it=1;
+  fi
+
+  if [ $do_it -eq 1 ]; then
+    echo "Initialize Cache... (${CURRENT_CACHE_FILE})"
+    echo "#!/bin/sh" > "$CURRENT_CACHE_FILE"
+    echo "#=================================================================" >> "$CURRENT_CACHE_FILE"
+    if [ -n "$CACHE_HEADER" ]; then
+      echo "$CACHE_HEADER" >> "$CURRENT_CACHE_FILE"
+      echo "#-----------------------------------------------------------------" >> "$CURRENT_CACHE_FILE"
+    fi
+    local d=`date`
+    echo "# Generated by CacheManager.txt on $d" >> "$CURRENT_CACHE_FILE"
+    echo "# Benoit Scherrer, CRL, 2010" >> "$CURRENT_CACHE_FILE"
+    echo "#=================================================================" >> "$CURRENT_CACHE_FILE"
+    chmod a+rw "$CURRENT_CACHE_FILE"
+  fi
+}
+
+#---------------------------------------------------------------
+# CHECK IF A FILE HAS BEEN MODIFIED
+# Compare the time stamp in the cache to the current one
+# If the file is not in the cache, or if the file does not exists
+# just true (1)
+#
+# $1 KEY VALUE
+#---------------------------------------------------------------
+function CACHE_HasFileBeenModified()
+{
+   local __file=$1
+
+   isAlreadyIsCache "$1"		# If the key is not in the cache, return TRUE
+   if [[  $? -eq 0 ]]; then
+      return 1;
+   elif [[ ! -f "${!__file}" ]]; then	# If the file does not exists, return TRUE
+      return 1;
+   else 				# Else compare the time stamps
+
+      local CURRENT_TIMESTAMP=`stat -c %y "${!__file}"`
+      local CACHED_TIMESTAMP=`getCachedValue "$1_TIMESTAMP"`
+
+      # Remove microseconds, because rsync puts it to 0 even when we ask to keep timestamp
+      CURRENT_TIMESTAMP=`date -d "$CURRENT_TIMESTAMP" --utc +'%Y-%m-%d %H:%M:%S'`
+      CACHED_TIMESTAMP=`date -d "$CACHED_TIMESTAMP" --utc +'%Y-%m-%d %H:%M:%S'`
+
+      if [ "${CACHED_TIMESTAMP}" == "${CURRENT_TIMESTAMP}" ]; then
+         return 0;
+      else
+         return 1;
+      fi
+   fi
+}
+
+#---------------------------------------------------------------
+# WRITE THE TIME STAMP FOR A GIVEN FILE
+#
+# $1 Key identifying the file (must be unique)
+# $2 File/Folder
+#
+# It will add/update the cache two lines:
+# [KEY]=[file]
+# [KEY_TIMESTAMP]=file time stamp
+#---------------------------------------------------------------
+function CACHE_UpdateFileTimeStamp()
+{
+   local TIMESTAMP;
+
+   # Set the key-file value in the cache
+   setCachedValue "$1" "$2"
+
+   # Modify the time stamp for that key
+   if [ -f "$2" ]; then
+     TIMESTAMP=`stat -c %y "$2"`
+   else
+     TIMESTAMP="";
+   fi
+   TIMESTAMP="${TIMESTAMP}"
+   setCachedValue "$1_TIMESTAMP" "${TIMESTAMP}"
+}
+
+#---------------------------------------------------------------
+# CHECK IF A STEP SHOULD BE PERFORMED
+# The step is identified by its key. If the step has never been
+# performed, the function returns true. Else, this function 
+# checks whether the dependencies have been modified to indicate 
+# if the step should be re-performed.
+#
+# $1 KEY VALUE : identify the step
+# $2 OPTIONAL VERSION NUMBER (default if not specified: 1.00 )
+#
+# RETURNS: 0 if should not generate, 1 if should generate
+#
+# EXAMPLE:
+#    CACHE_GenerateStepOrNot "EDDY_CORRECTED"
+#    if [  $? -eq 0 ]; then
+#      echo " + Use previously computed eddy-corrected data"
+#    else
+#      (do the step...)
+#      (...)
+#      CACHE_StepHasBeenGenerated "EDDY_CORRECTED" "${DIR_CORRECTED}/corr_data.nhdr" 
+#    fi
+#---------------------------------------------------------------
+function CACHE_DoStepOrNot()
+{
+  local d;
+
+  local VKEY=`ensureValidKey "$1"`
+  local version="$2"
+  if [[ -z "$version" ]]; then
+    version="1.00"
+  fi
+
+  #---------------------------------------------------
+  # Do that just to regroup the $1_VERSION with the $1_DONE
+  #---------------------------------------------------
+  isAlreadyIsCache "${VKEY}_VERSION"
+  if [ $? -eq 0 ]; then
+    setCachedValue "${VKEY}_VERSION" "$version"
+  fi
+
+  #---------------------------------------------------
+  # If not in cache, directly do the step
+  #---------------------------------------------------
+  isAlreadyIsCache "${VKEY}_DONE"		# If the key is not in the cache, YES should generate the step
+  if [  $? -eq 0 ]; then
+    setCachedValue "${VKEY}_VERSION" "$version"			# Be sure to update the version
+    setCachedValue "${VKEY}_TIMESTART" $(measureElapsedTime);
+    return 1;
+  else 
+    #echo "$VKEY in cache"
+    #---------------------------------------------------
+    # IF DONE IS NOT SET TO '1' YES GENERATE
+    #---------------------------------------------------
+    local KEY_DONE="${VKEY}_DONE";
+    if [ "${!KEY_DONE}" != "1" ]; then
+      setCachedValue "${VKEY}_VERSION" "$version"		# Be sure to update the version
+      setCachedValue "${VKEY}_TIMESTART" $(measureElapsedTime);
+      return 1;
+    fi
+
+    #---------------------------------------------------
+    # If there is a version number, check the version number
+    #---------------------------------------------------
+    if [ ! -z "$2" ]; then
+      local lastVersion=`ensureValidKey "${VKEY}_VERSION"`
+      lastVersion=${!lastVersion}
+      if [ -z "$lastVersion" ]; then
+         lastVersion="1.00"
+      fi
+      versionOK=`echo "${2}<=${lastVersion}" | bc`
+      if [ $versionOK -eq 0 ]; then
+        setCachedValue "${VKEY}_DONE" "0";
+        setCachedValue "${VKEY}_VERSION" "$version";
+        echo "- New version of this step available (${version}>${lastVersion})";
+
+        setCachedValue "${VKEY}_TIMESTART" $(measureElapsedTime);
+        return 1;
+      fi 
+    fi
+
+    local DOSTEP=0;
+
+    #---------------------------------------------------
+    # CHECK THE DEPENDECIES
+    #---------------------------------------------------
+    local KEY_NBDEPS="${VKEY}_DEPS_NB"
+    local NBDEPS=${!KEY_NBDEPS}
+   
+    # IF THE NB IS NOT DEFINED, THERE WERE A PB (IT SHOULD BE AT LEAST 0). SO DO THE STEP
+    if [ -z "$NBDEPS" ]; then
+      DOSTEP=1;
+    else
+      # CHECK ALL DEPENDENCIES
+      for d in `seq 1 $NBDEPS`
+      do
+         # IF THE FILE HAS BEEN MODIFIED YES GENERATE STEP
+         CACHE_HasFileBeenModified "${VKEY}_DEPS_$d"
+         if [ $? -eq 1 ]; then
+           local KEYFILE="${VKEY}_DEPS_$d";
+           echo "THE DEPENDENCY <${!KEYFILE}> HAS BEEN MODIFIED"
+           DOSTEP=1;
+         fi
+      done
+    fi
+
+
+    #---------------------------------------------------
+    # CHECK THE PRODUCTS 
+    #---------------------------------------------------
+    local KEY_NBPRODS="${VKEY}_PRODS_NB"
+    local NBPRODS=${!KEY_NBPRODS}
+   
+    # IF THE NB IS NOT DEFINED, THERE WERE A PB (IT SHOULD BE AT LEAST 0). SO DO THE STEP
+    if [ -z "$NBPRODS" ]; then
+      DOSTEP=1;
+    else
+      # CHECK ALL PRODUCTS
+      for d in `seq 1 $NBPRODS`
+      do
+         local KEYFILE="${VKEY}_PRODS_$d";
+         local f="${!KEYFILE}";
+
+         # IF THE FILE DOES NOT EXIST, YES GENERATE THE STEP
+         if [ ! -f "./$f" ] && [ ! -f "$f" ] ; then
+           echo "THE PRODUCT FILE <$f> HAS NOT BEEN FOUND."
+           DOSTEP=1;
+         fi
+      done
+    fi
+
+    if [ $DOSTEP -eq 1 ]; then
+      setCachedValue "${VKEY}_VERSION" "$version"   # Be sure to update the version
+      setCachedValue "${VKEY}_TIMESTART" $(measureElapsedTime);
+    fi
+
+    return $DOSTEP;
+  fi
+}
+
+#---------------------------------------------------------------
+# RESET THE STEP INDICATOR IF THE VALUE OF A VARIABLE HAS CHANGED
+#
+# $1 STEP KEY VALUE : identify the step
+# $2 VARIABLE KEY (internal) VALUE : identify the variable to check
+# $3 CURRENT VARIABLE VALUE
+#
+# Note: creates a variable "${VARKEY}_LASTVALUE" in the cache
+#
+# EXAMPLE: CACHE_RedoStepIfValueChanged "ICC_SEG" "ICC_STRATEGY" "${ICC_STRATEGY}"
+#---------------------------------------------------------------
+function CACHE_RedoStepIfValueChanged()
+{
+  local STEPKEY=`ensureValidKey "$1"`
+  local VARKEY=`ensureValidKey "$2"`
+  local val="$3"
+
+  #--------------------------------------------
+  # If the new internal key is not in the cache, then just 
+  # create _LASTVALUE and skip
+  #--------------------------------------------
+  isAlreadyIsCache "${VARKEY}_LASTVALUE"		
+  if [  $? -eq 0 ]; then
+    setCachedValue "${VARKEY}_LASTVALUE" "${val}"
+    return
+  fi
+
+  #--------------------------------------------
+  # If the key is not in the cache, then just skip 
+  # we are going to do the step anyway
+  #--------------------------------------------
+  isAlreadyIsCache "${STEPKEY}_DONE"		
+  if [  $? -eq 0 ]; then
+    setCachedValue "${VARKEY}_LASTVALUE" "${val}"
+    return
+  fi
+
+  #--------------------------------------------
+  # Else check current value and last value
+  #--------------------------------------------
+  local lastval="${VARKEY}_LASTVALUE"
+  lastval=${!lastval}
+  if [[ -z "$lastval" ]] ; then
+    echo "CACHE_RedoStepIfValueChanged: STRANGE ERROR."
+    echo "  Step <${STEPKEY}> done in the past"
+    echo "  But <${VARKEY}_LASTVALUE> never set"
+    echo
+  fi
+
+  #--------------------------------------------
+  # If different, redo step
+  #--------------------------------------------
+  if [[ "$lastval" != "$val" ]]; then
+    echo " >> Value of $VARKEY has changed"
+    echo "    Previous: $lastval"
+    echo "    New     : $val"
+    echo " >> Force step to recompute"
+    setCachedValue "${STEPKEY}_DONE" 0
+    setCachedValue "${VARKEY}_LASTVALUE" "${val}"
+  fi
+}
+
+#---------------------------------------------------------------
+# INDICATE THAT THE STEP HAS BEEN DONE
+# (by writing the key=file/folder in the cache file)
+#
+# $1 String identifying the step (must be unique) = KEY
+# $2 Comma-separated list of the dependencies (files)
+# $3 Comma-separated list of the products (files)
+#
+# Will produce in the cache:
+# [KEY]_DONE=1
+# [KEY]_DEPS_NB=XX
+# [KEY]_DEPS_1=[file]
+# [KEY]_DEPS_1_TIMESTAMP=[timestamp]
+# [KEY]_DEPS_2=[file]
+# [KEY]_DEPS_2_TIMESTAMP=[timestamp]
+# ....
+#
+#---------------------------------------------------------------
+function CACHE_StepHasBeenDone()
+{
+  local DEPS;
+  local PRODS;
+  local d;
+  local t;
+  local i;
+
+  local VKEY=`ensureValidKey "$1"`
+
+  #-----------------------------------------
+  # Convert the comma separed lists to arrays
+  # (WHILE being compatible with filename containing spaces!)
+  #-----------------------------------------
+  local tmpDEPS=`echo $2 | sed s/,/\\\n/g`
+  local tmpPRODS=`echo $3 | sed s/,/\\\n/g`
+  local PREVIFS=$IFS
+  IFS=$'\n'
+
+  local NB_DEPS=0;
+  for t in $tmpDEPS
+  do
+    DEPS[$NB_DEPS]=$t
+    NB_DEPS=$(($NB_DEPS+1))
+  done
+
+  NB_PRODS=0;
+  for t in $tmpPRODS
+  do
+    if [ ! -z "$t" ]; then
+      PRODS[$NB_PRODS]=$t
+      NB_PRODS=$(($NB_PRODS+1))
+    fi
+  done
+
+  IFS=$PREVIFS
+
+
+  #-----------------------------------------
+  # Set some variables in the cache
+  #-----------------------------------------
+  setCachedValue "${VKEY}_DONE" "1";
+
+  setCachedValue "${VKEY}_DEPS_NB" "${NB_DEPS}";
+  setCachedValue "${VKEY}_PRODS_NB" "${NB_PRODS}";
+
+  #-----------------------------------------
+  # Compute the elapsed time
+  #-----------------------------------------
+  local timeStart="${VKEY}_TIMESTART"
+  timeStart=${!timeStart}
+  local timeDuration=$(measureElapsedTime $timeStart)
+  setCachedValue "${VKEY}_STEP_DURATION" $timeDuration
+
+  echo -e "${VT100GREEN}STEP DURATION (hh:mm:ss) : $timeDuration${VT100CLEAR}"
+
+  #----------------------------------
+  # ADD ALL THE DEPENDENCIES TO THE CACHE
+  #----------------------------------
+  # 'for d in $DEPS' doesn t work with spaces in DEPS !
+  #  Use the array trick
+
+  for (( i=0; i<${NB_DEPS} ; i++ ));
+  do
+    d="${DEPS[$i]}"
+
+    if [ ! -f "$d" ]; then
+      echo -e "${VT100RED}------------ ERROR ------------------"
+      echo -e "Error. Cannot find the dependency <$d>."
+      echo -e "There might be an error in the script."
+      echo -e "Cannot continue.${VT100CLEAR}"
+      echo -e ""
+      exit 1;
+    fi
+
+    CACHE_UpdateFileTimeStamp "${VKEY}_DEPS_$(($i+1))" "$d";
+  done
+  
+  #----------------------------------
+  # ADD ALL THE PRODUCTS TO THE CACHE
+  # (but without timestamp for the products)
+  #----------------------------------
+  for (( i=0; i<${NB_PRODS} ; i++ ));
+  do
+    d="${PRODS[$i]}"
+    if [ ! -f "$d" ]; then
+      echo -e "${VT100RED}------------ ERROR ------------------"
+      echo -e "Error. Cannot find the product <$d>."
+      echo -e "There might be an error in the script."
+      echo -e "Cannot continue.${VT100CLEAR}"
+      echo -e ""
+      exit 1;
+    fi
+   
+    # Set the key-file value in the cache
+    setCachedValue "${VKEY}_PRODS_$(($i+1))" "$d"
+  done
+
+  return 0;
+}
+

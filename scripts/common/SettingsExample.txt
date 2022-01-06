@@ -1,0 +1,15 @@
+#!/bin/sh
+
+BaseRawDir="/common/data/raw/Controls"
+DataForAnalysisDir=""  			# Only for single subject mode (and only optional).
+BaseProcessedDir="/common/projects/Controls/Processed"
+SrcScriptDir="/common/projects/Controls/scripts"
+
+PipelineTemplatesDir="/fileserver/commondataprocessed/atlases/pipelinetemplates/"
+ThirdPartySoftwareDir="/opt/el7/pkgs/pipeline-thirdpartytools/"
+
+SCANID="scan"
+CASEID="case"
+
+ACRmode="0"
+

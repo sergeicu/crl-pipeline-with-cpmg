@@ -1,0 +1,118 @@
+#!/bin/sh
+
+#---------------------------------------------------------------------------------------
+# SYNTAX:
+# addModuleVariable [Variable name] [Default Value] [comment]
+# addDiffModule [Module UID] [Default Use] [relative path to script] [comma-separated dependencies] [add arguments]
+# addAnatModule [Module UID] [Default Use] [relative path to script] [comma-separated dependencies] [add arguments]
+#---------------------------------------------------------------------------------------
+addModuleVariable "CREATE_REPORT" "0" "If 1, create a HTML report"
+
+addModuleVariable "NBTHREADS" "4" "Set the number of threads to use for the multi-threaded tools"
+addModuleVariable "SKIP_DIFFUSION_MOCORR" "0" "Set this value to 1 to skip the motion correction for DWI."
+addModuleVariable "SKIP_ICC_EXTRACTION" "0" "Skip the ICC extraction. An ICC composed of all the non-null voxels will be created."
+
+addModuleVariable "POPULATION_ALIGNMENT_STRATEGY" "0" "0: Slow version / 1: Composed registration (faster)"
+addModuleVariable "POPULATION_ALIGNMENT_ALGORITHM" "0" "0: CRL Block Matching / 1: ANTs"
+
+addModuleVariable "PARCELLATION_STRATEGY" "1" "0: Local MAP STAPLE / 1: Local Probabilistic MAP STAPLE" 
+addModuleVariable "ICC_STRATEGY" "0" "0: Label based, without intensity (best) / 1: Label and intensity based"
+addModuleVariable "ICC_BABY" "0" "0: Patients age 3 years or older / 1: Patient age under 3 years old"
+addModuleVariable "ICC_VESSELS" "0" "0: No Vessel segmentation (best) / 1: Vessel segmentation (Experimental)"
+
+addModuleVariable "NEW_ICC_EXTRACTION" "0" "Use intensity based ICC extraction 0:NOT, label based / 1:YES, intensity based"
+
+addModuleVariable "ALIGN_ANAT_TO_DIFF" "0" "Align the anatomical scan onto the DWI instead of DWI onto the anatomical scan."
+
+#------------------------------------------
+# MS Lesion Segmentation module
+#------------------------------------------
+addAnatModule "LESION_SEGMENTATION_MS" "NO" "03.modules/lesions/LesionSegmentationModule.sh" "" "MS"
+
+#------------------------------------------
+# TSC Lesion Segmentation module
+#------------------------------------------
+addAnatModule "LESION_SEGMENTATION_TSC" "NO" "03.modules/lesions/LesionSegmentationModule.sh" "" "TSC"
+
+
+#------------------------------------------
+# Rendering modules
+#------------------------------------------
+addAnatModule "RENDER_SPL_EPILEPSY" "NO" "03.modules/rendering/spl_epilepsy.sh"
+
+#------------------------------------------
+# MFM modules
+#------------------------------------------
+# RENAME B632MFM_3T -> MFM_3T_T1WRES
+# RENAME B632MFM_LR_3T -> MFM_3T_DWIRES
+
+addDiffModule "MFM_3T_T1WRES" "NO" "03.modules/MFM/B632MFM_3T_t1wres.sh"
+addDiffModule "MFM_3T_DWIRES" "NO" "03.modules/MFM/B632MFM_3T_dwires.sh"
+
+addDiffModule "MFMFromHARDI_3T_T1WRES" "NO" "03.modules/MFM/DCIFromHARDI_3F_t1wres.sh"
+
+addDiffModule "DIAMOND_3T_T1WRES" "NO" "03.modules/MFM/DIAMOND_3T.sh"
+addDiffModule "DIAMOND_1T_T1WRES" "NO" "03.modules/MFM/DIAMOND_1T.sh"
+
+
+#------------------------------------------
+# MFM modules
+#------------------------------------------
+addDiffModule "WATERFRACTION1T" "NO" "03.modules/waterfraction1T/waterfraction1T.sh"
+
+#------------------------------------------
+# Parcellation modules
+#------------------------------------------
+addAnatModule "REFERENCE_POPULATION_ALIGNMENT_IBSR" "NO" "03.modules/PopulationAlignment/PopulationAlignmentScalar.sh" "" "IBSR" "${T1W_REF}"
+addAnatModule "PARCELLATION_IBSR" "NO" "03.modules/parcellation/BrainParcellation.sh" "" "IBSR"
+
+addAnatModule "REFERENCE_POPULATION_ALIGNMENT_NMM" "NO" "03.modules/PopulationAlignment/PopulationAlignmentScalar.sh" "" "NMM" "${T1W_REF}"
+addAnatModule "PARCELLATION_NMM" "NO" "03.modules/parcellation/BrainParcellation.sh" "" "NMM"
+
+addAnatModule "REFERENCE_POPULATION_ALIGNMENT_NVM" "NO" "03.modules/PopulationAlignment/PopulationAlignmentScalar.sh" "" "NVM" "${T1W_REF}"
+addAnatModule "PARCELLATION_NVM" "NO" "03.modules/parcellation/BrainParcellation.sh" "" "NVM"
+
+#------------------------------------------
+# Whole brain connectivity modules
+#------------------------------------------
+addDiffModule "WBC_1T_T1WRES"       "NO" "03.modules/wbc/wbc1T.sh" "PARCELLATION_NVM"                  ""
+
+addDiffModule "WBC_3T_T1WRES"       "NO" "03.modules/wbc/wbc3T.sh" "PARCELLATION_NVM"        ""
+addDiffModule "WBC_3T_T1WRES_SEEDINGINTERFACE"       "NO" "03.modules/wbc/wbc3T.sh" "PARCELLATION_NVM"        "SeedingInterface"
+
+addDiffModule "WBC_3DIAMOND_T1WRES" "NO" "03.modules/wbc/wbcDiamond.sh" "DIAMOND_3T_T1WRES,PARCELLATION_NVM"        ""
+addDiffModule "WBC_3T_DWIRES"       "NO" "03.modules/wbc/wbc3T_LR.sh" "MFM_3T_DWIRES,PARCELLATION_NVM"        ""
+
+
+#------------------------------------------
+# Auto-tract modules
+#------------------------------------------
+addDiffModule "REGISTER_TRACTTEMPLATES" "NO" "03.modules/autotracts/register_tract_templates.sh" 
+addDiffModule "TRACTTEMPLATES_PROJECTROI_RALPH" "NO" "03.modules/autotracts/project_tract_rois.sh" "REGISTER_TRACTTEMPLATES" "RALPH"
+addDiffModule "TRACTTEMPLATES_AUTOTRACTS_RALPH_1T" "NO" "03.modules/autotracts/autotracts1T_OLD.sh" "REGISTER_TRACTTEMPLATES,TRACTTEMPLATES_PROJECTROI_RALPH" "RALPH"
+
+addDiffModule "TRACTTEMPLATES_PROJECTROI_WILL" "NO" "03.modules/autotracts/project_tract_rois.sh" "REGISTER_TRACTTEMPLATES" "WILL"
+addDiffModule "TRACTTEMPLATES_AUTOTRACTS_WILL_1T" "NO" "03.modules/autotracts/autotracts1T.sh" "REGISTER_TRACTTEMPLATES,TRACTTEMPLATES_PROJECTROI_WILL" "WILL"
+
+#------------------------------------------
+# MFMAtlas/FBSS modules
+#------------------------------------------
+addDiffModule "MFM_ALIGNTOATLAS" "NO" "03.modules/FBSS/AlignToAtlas.sh" "" ""
+
+#------------------------------------------
+# Export modules
+#------------------------------------------
+addDiffModule "EXPORT_MEDINRIA" "NO" "03.modules/export/export_dwi_medinria.sh"
+addDiffModule "EXPORT_FSL" "NO" "03.modules/export/export_dwi_fsl.sh"
+
+#------------------------------------------
+# FMRI modules
+#------------------------------------------
+addFMRIModule "FMRI_COMMON" "NO" "03.modules/fmri/fmri_common.sh"
+
+#------------------------------------------
+# Quality assessment
+#------------------------------------------
+# addAnatModule "QA" "NO" "03.modules/QA/QA.sh"
+
+

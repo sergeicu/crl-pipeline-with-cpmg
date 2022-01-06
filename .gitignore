@@ -1,0 +1,13 @@
+*.nii.gz 
+*.nrrd 
+*.pkl 
+*.png 
+*.jpeg
+__pycache__
+
+data_for_analysis
+report
+common-processed/anatomical
+common-processed/modules
+common-processed/logs
+scripts/.svn

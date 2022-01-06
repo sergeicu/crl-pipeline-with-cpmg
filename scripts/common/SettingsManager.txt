@@ -1,0 +1,486 @@
+#!/bin/sh
+#=====================================================================
+# BASH SCRIPTS - SETTING MANAGER
+# Benoit Scherrer, CRL, 2011
+# VERSION: 1.0.0 - 04/14/2011
+#---------------------------------------------------------------------
+#
+#=====================================================================
+
+source `dirname ${BASH_SOURCE[0]}`/bashMutex.sh || exit 1
+
+#---------------------------------------------------------------------
+# If the setting file exists, includes it
+# First look for it in the base directory. Else look for it in the current dir
+#---------------------------------------------------------------------
+CURRENT_SETTINGS_FILE="`pwd`/../../../../00_ModuleSettings.txt"
+CURRENT_SETTINGS_FILE=`readlink -f "${CURRENT_SETTINGS_FILE}"`
+
+CURRENT_SETTINGS_FILE2="`pwd`/../../../00_ModuleSettings.txt"
+CURRENT_SETTINGS_FILE2=`readlink -f "${CURRENT_SETTINGS_FILE2}"`
+
+settingslockfile=""
+
+if [ -f "$CURRENT_SETTINGS_FILE" ]; then
+   echo "Read the settings from <$CURRENT_SETTINGS_FILE>"
+   settingslockfile="`pwd`/../../../../msettings.lock"
+   settingslockfile=`readlink -f "$settingslockfile"`
+   mutexLockFile "$settingslockfile"
+   source "$CURRENT_SETTINGS_FILE" || exit 1
+   mutexUnlockFile "$settingslockfile"
+elif [ -f "$CURRENT_SETTINGS_FILE2" ]; then
+   echo "Read the settings from <$CURRENT_SETTINGS_FILE2>"
+   settingslockfile="`pwd`/../../../msettings.lock"
+   settingslockfile=`readlink -f "$settingslockfile"`
+   mutexLockFile "$settingslockfile"
+   source "$CURRENT_SETTINGS_FILE2" || exit 1
+   mutexUnlockFile "$settingslockfile"
+else
+  CURRENT_SETTINGS_FILE="`pwd`/00_ModuleSettings.txt"
+  if [ -f "$CURRENT_SETTINGS_FILE" ]; then
+     echo "Read the settings from <$CURRENT_SETTINGS_FILE>"
+     settingslockfile="`pwd`/msettings.lock"
+     settingslockfile=`readlink -f "$settingslockfile"`
+     mutexLockFile "$settingslockfile"
+     source "$CURRENT_SETTINGS_FILE" || exit 1
+     mutexUnlockFile "$settingslockfile"
+  fi
+fi
+
+
+#---------------------------------------------------------------------
+# $1: Variable name (string)
+# $2: Default value
+# $3: If defined, comment
+#
+# EXAMPLE:
+#   addSettingVariable "NBTHREADS" "4" "Set the number of threads"
+#---------------------------------------------------------------------
+function addSettingVariable()
+{
+  local vname=`ensureValidVariable "$1"`
+  initSettings
+  isVariableAlreadyInSettings "$vname"		   # Checks if the key=value has already been set
+  if [  $? -ne 0 ]; then			   # If yes modifies it
+    local v=`echo "$2" | sed 's/\//\\\\\//g'`		   #  Corrects the string for sed: convert '/' to '\/'
+    sed -i "s/$vname=\(\S*\).*/$vname=\"$v\"/" "$CURRENT_SETTINGS_FILE" ; 
+  else		
+    comment=""
+    if [ ! -z "$3" ]; then 
+      comment="    ## ${3}"
+    fi
+    echo "$vname=\"$2\" $comment" >> "$CURRENT_SETTINGS_FILE" ;
+  fi
+
+  if [ ! -z "$settingslockfile" ]; then
+    mutexLockFile "$settingslockfile"
+  fi
+
+  read -r $vname <<< "$2";
+
+  if [ ! -z "$settingslockfile" ]; then
+    mutexUnlockFile "$settingslockfile"
+  fi
+
+}
+
+#---------------------------------------------------------------------
+# CHECKS IF A VARIABLE IS ALREADY IN THE SETTINGS
+#
+# $1: Variable name
+#
+# RETURNS: 1 if yes, 0 if not
+#
+# EXAMPLE: can be tested with the following code:
+#   isVariableAlreadyInSettings "NBTHREADS";
+#   if [ $? -ne 0 ]; then
+#     echo "in settings"
+#   fi
+#---------------------------------------------------------------------
+function isVariableAlreadyInSettings()
+{
+# CHECK IN THE SETTING file
+  if [ ! -z "$settingslockfile" ]; then
+    mutexLockFile "$settingslockfile"
+  fi
+
+  local file="$CURRENT_SETTINGS_FILE"
+  local val=`grep "$1" "$file" | sed -e 's/.*=\(\S*\).*/\1/g'`
+
+  if [ ! -z "$settingslockfile" ]; then
+    mutexUnlockFile "$settingslockfile"
+  fi
+
+
+  if [ -z "${val}" ]; then
+    return 0;
+  else
+    return 1;
+  fi
+}
+
+#---------------------------------------------------------------------
+# GET THE VALUE OF A BOOLEAN VARIABLE
+# RETURNS TRUE FOR THE VALUES "ON" or "YES". ELSE RETURNS FALSE
+#
+# $1 : Variable name
+#
+#   getBooleanVariable "USE_BET";
+#   if [ $? -eq 1 ]; then
+#     echo "use bet"
+#   fi
+#---------------------------------------------------------------------
+function getBooleanVariable()
+{
+  local vname=`ensureValidVariable "$1"`
+  local val=${!vname}
+
+  if [ "$val" == "ON" ]; then
+    return 1;
+  elif [ "$val" == "YES" ]; then
+    return 1;
+  else
+    return 0;
+  fi
+}
+
+#---------------------------------------------------------------------
+# INITIALIZE THE SETTING FILE
+#
+# $1 : if not null, and if the setting file already exists, ask if it should
+#      be reinitialized
+#
+# EXAMPLE:  initCache
+#           initCache "force"
+#---------------------------------------------------------------------
+function initSettings()
+{
+  local do_it=0;
+  if [ -f "$CURRENT_SETTINGS_FILE" ]; then
+    if [ ! -z $1 ]; then
+      echo "The setting file ${CURRENT_SETTINGS_FILE} already exists.";
+      echo "Do you want to reinitialize it ? (y/n)";
+      read -n 1 force_reinit
+      echo 
+      if [ "$force_reinit" = "y" ]; then
+        do_it=1;
+      fi
+    fi
+  else
+    do_it=1;
+  fi
+
+  if [ $do_it -eq 1 ]; then
+    echo "Initialize Settings..."
+
+    if [ ! -z "$settingslockfile" ]; then
+      mutexLockFile "$settingslockfile"
+    fi
+
+    echo "#!/bin/sh" > "$CURRENT_SETTINGS_FILE"
+    echo "#=================================================================" >> "$CURRENT_SETTINGS_FILE"
+    if [ -n "$SETTINGS_HEADER" ]; then
+      echo "$SETTINGS_HEADER" >> "$CURRENT_SETTINGS_FILE"
+      echo "#-----------------------------------------------------------------" >> "$CURRENT_SETTINGS_FILE"
+    else
+      echo "# SETTINGS FILE" >> "$CURRENT_SETTINGS_FILE"
+      echo "# You can modify this file to change the pipeline settings." >> "$CURRENT_SETTINGS_FILE"
+    fi
+    echo "#-----------------------------------------------------------------" >> "$CURRENT_SETTINGS_FILE"
+    local d=`date`
+    echo "# Generated by SettingsManager.txt on $d" >> "$CURRENT_SETTINGS_FILE"
+    echo "# Benoit Scherrer, CRL, 2011" >> "$CURRENT_SETTINGS_FILE"
+    echo "#=================================================================" >> "$CURRENT_SETTINGS_FILE"
+    echo "LIST_ANAT_MODULES=\"\"" >> "$CURRENT_SETTINGS_FILE"
+    echo "LIST_DIFF_MODULES=\"\"" >> "$CURRENT_SETTINGS_FILE"
+    echo "LIST_FMRI_MODULES=\"\"" >> "$CURRENT_SETTINGS_FILE"
+    echo "INTERNALTIMESTAMP=\"\"" >> "$CURRENT_SETTINGS_FILE"
+    echo "" >> "$CURRENT_SETTINGS_FILE"
+    echo "" >> "$CURRENT_SETTINGS_FILE"
+    echo "#=================================================================" >> "$CURRENT_SETTINGS_FILE"
+    echo "# BEGINNING OF THE SETTINGS" >> "$CURRENT_SETTINGS_FILE"
+    echo "#=================================================================" >> "$CURRENT_SETTINGS_FILE"
+
+    chmod a+rw "$CURRENT_SETTINGS_FILE"
+
+    if [ ! -z "$settingslockfile" ]; then
+      mutexUnlockFile "$settingslockfile"
+    fi
+
+  fi
+}
+
+#---------------------------------------------------------------------
+# Check if the Modules file has been modified
+#---------------------------------------------------------------------
+function hasModuleFileBeenModified()
+{
+  if [ ! -f "$ScriptDir/03.modules/Modules.txt" ]; then
+    return 0;
+  fi
+
+  isVariableAlreadyInSettings "INTERNALTIMESTAMP"		# If the key is not in the cache, return TRUE
+  if [  $? -eq 0 ]; then
+    return 1;
+  else
+    local CURRENT_TIMESTAMP=`stat -c %Y "$ScriptDir/03.modules/Modules.txt"`
+    local CACHED_TIMESTAMP="$INTERNALTIMESTAMP"
+
+    #----------------------------------------------
+    # Only for compatibility. used to have time stamp like "2013-02-02 20:02:02"
+    # Now use a single number (-c %Y instead of -c %y) to be able to compare (-gt)
+    #----------------------------------------------
+    if [[ "$CACHED_TIMESTAMP=" == *:* ]]; then
+      CACHED_TIMESTAMP=0		# reinit the time stamp
+    fi
+
+    #----------------------------------------------
+    # Check if should update!
+    #----------------------------------------------
+    if [[ -z "${CURRENT_TIMESTAMP}" || -z "$CACHED_TIMESTAMP" ]]; then
+      return 1
+    fi 
+
+
+    if [ ${CURRENT_TIMESTAMP} -gt ${CACHED_TIMESTAMP} ]; then
+       return 1;
+    else
+       return 0;
+    fi
+
+  fi
+}
+
+#---------------------------------------------------------------------
+# GETS THE CORRECTED (IF NECESSARY) NAME FOR A VARIABLE
+#
+# $1: Var Name
+#
+# RETURNS: The corrected name
+#
+# EXAMPLE:
+#   VARNAME=`ensureValidVariable "$VARNAME"`
+#   echo $VARNAME
+#---------------------------------------------------------------------
+function ensureValidVariable()
+{
+  local VAR_NAME=`echo "$1" | sed "s/-/_/g"`
+  VAR_NAME=`echo "${VAR_NAME}" | sed 's/!/_/g'`
+  VAR_NAME=`echo "${VAR_NAME}" | sed "s/#/_/g"`
+  echo "${VAR_NAME}"
+}
+
+
+#---------------------------------------------------------------------
+# Add a anatomical module.
+#
+# $1: Module Unique ID (string)
+# $2: Default (1/ON/YES = Use the module)
+# $3: relative directory (from scripts/) to the sh file to execute
+# $4: Comma-separated list of the module ID dependencies
+# $5: Additional arguments to add when calling the module(optional)
+#---------------------------------------------------------------------
+function addAnatModule()
+{
+  local mname=`ensureValidVariable "$1"`
+
+  isVariableAlreadyInSettings "USE_${mname}"
+  if [  $? -eq 0 ]; then
+    if [ -z "${LIST_ANAT_MODULES}" ]; then
+      LIST_ANAT_MODULES="${mname}"
+    else
+      LIST_ANAT_MODULES="${LIST_ANAT_MODULES},${mname}"
+    fi
+    addSettingVariable "LIST_ANAT_MODULES" "${LIST_ANAT_MODULES}"
+
+    echo "" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "# ANATOMIC MODULE <$mname>" >> "$CURRENT_SETTINGS_FILE" ;   
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+
+    addSettingVariable "USE_${mname}" "$2"
+  fi
+
+  #------------------------------------
+  # DO it each time to update in case
+  #------------------------------------   
+  addSettingVariable "SCRIPT_${mname}" "$3"
+  if [ ! -z "$4" ]; then
+    addSettingVariable "USE_${mname}_DEPS" "$4"
+  fi
+  if [ ! -z "$5" ]; then
+    addSettingVariable "USE_${mname}_OPTARGS" "$5"
+  fi
+}
+
+
+#---------------------------------------------------------------------
+# Add a diffusion module. The difference with an anatomical module
+# is that when called, the first parameter of the script will
+# be the dwiid (cusp45, dwi35, ...). It is necessary because there
+# might be several diffusion weighted acquisitions.
+#
+# $1: Module Unique ID (string)
+# $2: Default (1/ON/YES = Use the module)
+# $3: relative directory (from scripts/) to the sh file to execute
+# $4: Comma-separated list of the module ID dependencies
+# $5: Additional arguments to add when calling the module(optional)
+#---------------------------------------------------------------------
+function addDiffModule()
+{
+  local mname=`ensureValidVariable "$1"`
+
+  isVariableAlreadyInSettings "USE_${mname}"
+  if [  $? -eq 0 ]; then
+    if [ -z "${LIST_DIFF_MODULES}" ]; then
+      LIST_DIFF_MODULES="${mname}"
+    else
+      LIST_DIFF_MODULES="${LIST_DIFF_MODULES},${mname}"
+    fi
+    addSettingVariable "LIST_DIFF_MODULES" "${LIST_DIFF_MODULES}"
+
+    echo "" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "# DIFFUSION MODULE <$mname>" >> "$CURRENT_SETTINGS_FILE" ;   
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+
+    addSettingVariable "USE_${mname}" "$2"
+  fi
+
+  #------------------------------------
+  # DO it each time to update in case
+  #------------------------------------   
+  addSettingVariable "SCRIPT_${mname}" "$3"
+  if [ ! -z "$4" ]; then
+    addSettingVariable "USE_${mname}_DEPS" "$4"
+  fi
+  addSettingVariable "USE_${mname}_OPTARGS" "$5"
+
+}
+
+
+#---------------------------------------------------------------------
+# Add a FMRI module. The difference with an anatomical module
+# is that when called, the first parameter of the script will
+# be the fmriid (fmri1, fmri2, ...). It is necessary because there
+# might be several fMRI acquisitions.
+#
+# $1: Module Unique ID (string)
+# $2: Default (1/ON/YES = Use the module)
+# $3: relative directory (from scripts/) to the sh file to execute
+# $4: Comma-separated list of the module ID dependencies
+# $5: Additional arguments to add when calling the module(optional)
+#---------------------------------------------------------------------
+function addFMRIModule()
+{
+  local mname=`ensureValidVariable "$1"`
+
+  isVariableAlreadyInSettings "USE_${mname}"
+  if [  $? -eq 0 ]; then
+    if [ -z "${LIST_FMRI_MODULES}" ]; then
+      LIST_FMRI_MODULES="${mname}"
+    else
+      LIST_FMRI_MODULES="${LIST_FMRI_MODULES},${mname}"
+    fi
+    addSettingVariable "LIST_FMRI_MODULES" "${LIST_FMRI_MODULES}"
+
+    echo "" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+    echo "# FMRI MODULE <$mname>" >> "$CURRENT_SETTINGS_FILE" ;   
+    echo "#-------------------------------------" >> "$CURRENT_SETTINGS_FILE" ;
+
+    addSettingVariable "USE_${mname}" "$2"
+  fi
+
+  #------------------------------------
+  # DO it each time to update in case
+  #------------------------------------   
+  addSettingVariable "SCRIPT_${mname}" "$3"
+  if [ ! -z "$4" ]; then
+    addSettingVariable "USE_${mname}_DEPS" "$4"
+  fi
+  addSettingVariable "USE_${mname}_OPTARGS" "$5"
+
+}
+
+#---------------------------------------------------------------------
+# WILL BE ADDED WITH DEFAULT VALUE ONLY IF IT DOES NOT EXIST YET.
+# ELSE DO NOTHING
+#
+# $1: Variable name (string)
+# $2: Default value
+# $3: If defined, comment
+#---------------------------------------------------------------------
+function addModuleVariable()
+{
+  local vname=`ensureValidVariable "$1"`
+  isVariableAlreadyInSettings "$vname"
+  if [  $? -eq 0 ]; then
+    addSettingVariable "$1" "$2" "$3"
+  fi
+}
+
+#---------------------------------------------------------------------
+# $1: Module Unique ID (string)
+#
+#   useModule "ID";
+#   if [ $? -eq 1 ]; then
+#     echo "use module"
+#   fi
+#---------------------------------------------------------------------
+function useModule()
+{
+  local mname=`ensureValidVariable "$1"`
+  local DEPS;
+
+  local moduleUse="USE_${mname}"
+  moduleUse="${!moduleUse}"
+
+  #-----------------------------------------
+  # Check if the module should be used
+  #-----------------------------------------
+  getBooleanVariable "USE_${mname}"
+  if [ $? -eq 0 ]; then
+     return 0
+  fi
+
+  #-----------------------------------------
+  # Convert the comma separed dep list to an array
+  #-----------------------------------------
+  local moduleDep="USE_${mname}_DEPS"
+  moduleDep="${!moduleDep}"
+
+  local tmpDEPS=`echo ${moduleDep} | sed s/,/\\\n/g`
+  local PREVIFS=$IFS
+  IFS=$'\n'
+  local NB_DEPS=0;
+  for t in $tmpDEPS
+  do
+    if [ ! -z "$t" ]; then
+      DEPS[$NB_DEPS]=$t
+      NB_DEPS=$(($NB_DEPS+1))
+    fi
+  done
+  IFS=$PREVIFS
+
+  #-----------------------------------------
+  # NOW Check that all modules are ON
+  #-----------------------------------------
+  local i
+  local okDeps=1
+  for (( i=0; i<${NB_DEPS} ; i++ ));
+  do
+    local m="${DEPS[$i]}"
+    local m=`ensureValidVariable "$m"`
+    getBooleanVariable "USE_${m}"
+    if [ $? -eq 0 ]; then
+      okDeps=0;
+      echo "ERROR. Cannot run the module <${mname}>."
+      echo "       It depends on the module <${m}>, which is not active."
+    fi
+  done
+
+  return $okDeps;
+}
+
+

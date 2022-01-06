@@ -1,0 +1,695 @@
+#!/bin/sh
+ 
+# $1: input folder name
+# $2: 1 if cusp, 0 if dwi
+function RunDWIPipeline_prepare
+{
+  local prevdir=`pwd`
+ 
+  echo "======================================================"
+  echo " PREPARE DWI DATA FROM:"
+  echo " $1"
+  echo " prefix: ${prefix}"
+  echo "======================================================"
+
+
+  #---------------------------------------------------
+  # Check that the isotropic T1 has been set and exists
+  #---------------------------------------------------
+  if [ -z "${T1W_REF}" ] || [ ! -f "${T1W_REF}" ]; then
+    echo "FATAL ERROR. The t1w ref image <$T1W_REF>"
+    echo "has not been computed or is invalid." 
+    exit 1
+  fi
+
+  checkIfVariablesAreSet "ICC_MASK,T1W_REF_MASKED,T2W_REF_MASKED"
+
+  #---------------------------------------------------
+  # Create the processed subdir
+  #---------------------------------------------------
+  DWIid=`basename "$1"`
+  DWIid=`echo "${DWIid}" | sed "s/ /_/g"`
+  DWIProcessedDir="$ScanProcessedDir/common-processed/diffusion/${DWIid}"
+  mkdir -p "$DWIProcessedDir" || exit 1
+
+  #---------------------------------------------------
+  # Get the number of NHDR files. Check if only one
+  #---------------------------------------------------
+  DWISrcDir="$1"
+  NbNhdr=`find "$DWISrcDir"/ -type f -name \*.nhdr | wc -l`
+  if [ $NbNhdr -eq 0 ]; then
+
+    #--------------------------------------------
+    # If no nhdr, look for nii or nii.gz
+    #--------------------------------------------
+    NbNii=`find "$DWISrcDir"/ -type f -name \*.nii\* | wc -l`
+
+    #--------------------------------------------
+    # If no nii/nii.gz just return error
+    #--------------------------------------------
+    if [ $NbNii -eq 0 ]; then
+      echo
+      echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      echo "FATAL ERROR. Invalid Diffusion Directory."
+      echo "There is no NHDR, nii or nii.gz file in the folder:"
+      echo "   <$DWISrcDir>"
+      echo "The pipeline cannot continue for this forder."
+      echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      echo      
+      exit 1
+
+    #--------------------------------------------
+    # If more than one, error
+    #--------------------------------------------
+    elif  [ $NbNii -gt 1 ]; then
+      echo
+      echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      echo "FATAL ERROR. Invalid Diffusion Directory."
+      echo "There are multiple data.Nii* file in the folder:"
+      echo "   <$DWISrcDir>"
+      echo "Don't know which one to choose."
+      echo "The pipeline cannot continue for this forder."
+      echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      echo  
+
+    #--------------------------------------------
+    # Else, a single one, then convert to nhdr
+    #--------------------------------------------
+    else
+      echo " CONVERT nifti -> nhdr"
+      mkdir -p "$DWISrcDir/nhdr"
+      
+      bvecs=`find "$DWISrcDir"/ -type f -name \*vec\* | head -1`
+      bvals=`find "$DWISrcDir"/ -type f -name \*val\* | head -1`
+      nii=`find "$DWISrcDir"/ -type f -name \*.nii\* | head -1`
+      
+      crlDWIConvertFSLToNHDR --axial -i "$nii" -o "$DWISrcDir/nhdr/${prefix}_diffusion.nhdr" --bvals "$bvals" --bvecs "$bvecs"
+      exitIfError "crlDWIConvertFSLToNHDR"
+    fi
+
+  #--------------------------------------------
+  # If more than 1 NHDR, error
+  #--------------------------------------------
+  elif [ $NbNhdr -gt 1 ]; then
+    echo
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "FATAL ERROR. Invalid Diffusion Directory."
+    echo "There is MORE than one NHDR file in the folder:"
+    echo "   <$DWISrcDir>"
+    echo "I don't know which one to use" 
+    echo "The pipeline cannot continue"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo
+    exit 1
+  fi
+
+  #---------------------------------------------------
+  # Get the NHDR file
+  #---------------------------------------------------
+  NHDRfile=`find "$DWISrcDir"/ -type f -name \*.nhdr | head -1`
+  exportVariable "${DWIid}_NHDR" "$NHDRfile"
+
+  #---------------------------------------------------
+  # Print out some infos
+  #---------------------------------------------------
+  echo "- File <$NHDRfile>"
+  echo "- Identifier: <${DWIid}>"
+  echo "- Output directory <$DWIProcessedDir>"
+  echo
+
+#=========================================================
+# Correct for geometric distortion due to susceptibility artefact
+# OUTPUT: ${DWIid}_DISTORTIONCORRECTED_NHDR
+#
+# remark: Modify the variable 'NHDRfile'
+#=========================================================
+if [[ -f "$DWISrcDir/ap.nrrd" ]] && [[ -f "$DWISrcDir/pa.nrrd" ]]; then
+  APPA=1
+  B0A="$DWISrcDir/ap.nrrd"
+  B0B="$DWISrcDir/pa.nrrd"
+else
+  APPA=0
+fi
+
+if [[ -f "$DWISrcDir/b0.nrrd" ]] && [[ -f "$DWISrcDir/b0rev.nrrd" ]]; then
+  B0B0REV=1
+  B0A="$DWISrcDir/b0.nrrd"
+  B0B="$DWISrcDir/b0rev.nrrd"
+else
+  B0B0REV=0
+fi
+
+if [[ $APPA -eq 1 ]] && [[ $B0B0REV -eq 1 ]]; then
+  errorAndExit "Found both ap.nrrd/pa.nrrd and b0/b0rev.nrrd in $DWISrcDir. Only one pair of images with reversed phase encoding directions can be used"
+fi
+
+if [[ $APPA -eq 1 ]] || [[ $B0B0REV -eq 1 ]]; then
+  showStepTitle "Correct for geometric and intensity distortion"
+
+  exportVariable "${DWIid}_DistortionCorrectionDone" "1"  
+
+  CACHE_DoStepOrNot "${DWIid}_DISTCORRECTION" "1.00"
+  if [ $? -eq 0 ]; then
+    echo "- Use previously computed motion-corrected data."
+  else
+    OFOLDER="$DWIProcessedDir/01-distortioncorrection"
+    mkdir -p "$OFOLDER"
+    mkdir -p "$OFOLDER/tmp"
+
+    #--------------------------------------------
+    # Check images
+    #--------------------------------------------
+    showStepInfo "Check images..."
+    As=`crlImageInfo "$B0A" | grep "Size:"`
+    Ax=`echo "$As" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\1/'`
+    Ay=`echo "$As" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\2/'`
+    Az=`echo "$As" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\3/'`
+    Bs=`crlImageInfo "$B0B" | grep "Size:"`
+    Bx=`echo "$Bs" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\1/'`
+    By=`echo "$Bs" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\2/'`
+    Bz=`echo "$Bs" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\3/'`
+    Ns=`crlImageInfo "$NHDRfile" | grep "Size:"`
+    Nx=`echo "$Ns" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\1/'`
+    Ny=`echo "$Ns" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\2/'`
+    Nz=`echo "$Ns" | sed -e 's/.*\[\([0-9]*\),\ \([0-9]*\),\ \([0-9]*\)\]/\3/'`
+
+    if [[ $Ax -ne $Bx ]] || [[ $Ax -ne $Nx ]] || [[ $Ay -ne $By ]] || [ $Ay -ne $Ny ] || [[ $Az -ne $Bz ]] || [[ $Az -ne $Nz ]]; then
+      echo "  ERROR. Dimensions are not equal"
+      echo "  $As ($B0A)"
+      echo "  $Bs ($B0B)"
+      echo "  $Ns ($NHDRfile)"
+      echo
+      exit 1
+    fi
+
+    #--------------------------------------------
+    # Check if need cropping?
+    #--------------------------------------------
+    let nNx=($Nx/2)*2
+    let nNy=($Ny/2)*2
+    let nNz=($Nz/2)*2
+
+    if [[ $nNx -ne $Nx ]] || [[ $nNy -ne $Ny ]] || [[ $nNz -ne $Nz ]]; then
+      echo
+      echo "------------------------------------------------------"
+      echo "!! WARNING - Cropping to even size in each direction."
+      echo "!!           REQUIRED BY TOPUP"
+      echo "------------------------------------------------------"
+
+      fA=`basename $B0A`
+      fB=`basename $B0B`
+
+      crlCropImage -i $B0A -o $OFOLDER/tmp/cropped_${fA} -x "0,0,0,$nNx,$nNy,$nNz"
+      crlCropImage -i $B0B -o $OFOLDER/tmp/cropped_${fB} -x "0,0,0,$nNx,$nNy,$nNz"
+      crlCropImage -i $NHDRfile -o $OFOLDER/tmp/cropped_DIFF.nhdr -x "0,0,0,$nNx,$nNy,$nNz"
+
+      B0A=$OFOLDER/tmp/cropped_${fA}
+      B0B=$OFOLDER/tmp/cropped_${fB}
+      NHDRfile=$OFOLDER/tmp/cropped_DIFF.nhdr
+    fi
+
+
+    #--------------------------------------------
+    # Convert to 4D images for topup
+    #--------------------------------------------
+    showStepInfo "Prepare data for topup..."
+    crlDWIConvertNHDRForFSL -i $NHDRfile --data $OFOLDER/tmp/data.nii.gz --bvecs $OFOLDER/tmp/data.bvecs --bvals $OFOLDER/tmp/data.bvals
+    crlConvertN3DTo4D -i $B0A -i $B0B -o "$OFOLDER/tmp/b0images.nii.gz"
+
+    #--------------------------------------------
+    # Describe the acquisitions
+    #--------------------------------------------
+    acqparamfile=$OFOLDER/tmp/acqparams.txt
+    rm -f $acqparamfile
+    for f in $B0A $B0B;
+    do
+      if [[ $f == *ap.nrrd ]]; then echo "0 1 0 1" >> $acqparamfile ; fi
+      if [[ $f == *b0.nrrd ]]; then echo "0 1 0 1" >> $acqparamfile ; fi
+      if [[ $f == *pa.nrrd ]]; then echo "0 -1 0 1" >> $acqparamfile ; fi
+      if [[ $f == *b0rev.nrrd ]]; then echo "0 -1 0 1" >> $acqparamfile ; fi
+      if [[ $f == *rl.nrrd ]]; then echo "1 0 0 1" >> $acqparamfile ; fi
+      if [[ $f == *lr.nrrd ]]; then echo "-1 0 0 1" >> $acqparamfile ; fi
+    done
+    echo "- Created $acqparamfile:"
+    cat $acqparamfile
+    echo 
+
+    #--------------------------------------------------
+    # Go! Run topup
+    #--------------------------------------------------
+    showStepInfo "RUN TOPUP"
+    echo "topup --imain=$OFOLDER/tmp/b0images.nii.gz --datain=$OFOLDER/tmp/acqparams.txt --config=b02b0.cnf --out=$OFOLDER/tmp/topupresults --fout=$OFOLDER/tmp/topupfield --iout=$OFOLDER/tmp/topupunwarped"
+    topup --imain=$OFOLDER/tmp/b0images.nii.gz --datain=$OFOLDER/tmp/acqparams.txt --config=b02b0.cnf --out=$OFOLDER/tmp/topupresults --fout=$OFOLDER/tmp/topupfield --iout=$OFOLDER/tmp/topupunwarped
+
+    #--------------------------------------------------
+    # Apply results
+    #--------------------------------------------------
+    showStepInfo "APPLY TOPUP"
+    applytopup --imain=$OFOLDER/tmp/data --inindex=1 --datain=$OFOLDER/tmp/acqparams.txt --topup=$OFOLDER/tmp/topupresults --out=$OFOLDER/tmp/corrfiles --method=jac
+    echo
+
+    #--------------------------------------------------
+    # Converts back to nhdr
+    #--------------------------------------------------
+    showStepInfo "CONVERT BACK TO NHDR"
+    distcorrNHDR=$OFOLDER/${prefix}distortioncorrected.nhdr
+
+    crlDWIConvertFSLToNHDR -i $OFOLDER/tmp/corrfiles.nii --bvecs $OFOLDER/tmp/data.bvecs --bvals $OFOLDER/tmp/data.bvals -o $distcorrNHDR
+    crlConvertBetweenFileFormats -in $OFOLDER/tmp/topupfield.nii -out $OFOLDER/${prefix}topupfield.nrrd
+    crlConvertBetweenFileFormats -in $OFOLDER/tmp/topupresults_fieldcoef.nii -out $OFOLDER/${prefix}topupfieldcoef.nrrd
+    cp $OFOLDER/tmp/topupresults_movpar.txt $OFOLDER/${prefix}topupmovpar.txt
+
+
+    exportVariable "${DWIid}_DISTORTIONCORRECTED_NHDR" "$distcorrNHDR"
+
+    CACHE_StepHasBeenDone "${DWIid}_DISTCORRECTION" "$NHDRfile" "$distcorrNHDR"
+  fi
+  echo ""
+
+ 
+  NHDRfile="${DWIid}_DISTORTIONCORRECTED_NHDR"
+  NHDRfile=${!NHDRfile}
+
+  #echo "=== DEBUG NHDRfile = $NHDRfile"
+else
+  # NO distortion correction
+  exportVariable "${DWIid}_DistortionCorrectionDone" "0"  
+fi
+
+#--------------------------------------------------
+# Be sure to redo the next step if NHDRFile is now
+# a different file! 
+#--------------------------------------------------
+didDistCorrHappened="${DWIid}_DistortionCorrectionDone"; didDistCorrHappened=${!didDistCorrHappened}
+CACHE_RedoStepIfValueChanged "${DWIid}_RESCALEDNHDR" "${DWIid}_DistortionCorrectionDone" "${didDistCorrHappened}"
+
+
+#=========================================================
+# RESCALE intensities if necessary (most generally: philips data)
+#
+#=========================================================
+showStepTitle "Rescale intensities if necessary"
+CACHE_DoStepOrNot "${DWIid}_RESCALEDNHDR" "1.03"
+if [  $? -eq 0 ]; then
+  echo "- Use previously computed step."
+else
+  OFOLDER="$DWIProcessedDir/01-intensitiesrescaled"
+  mkdir -p "$OFOLDER"
+  mkdir -p "$OFOLDER/tmp"
+
+  #-----------------------------------
+  # First get the mean of b=0 image
+  #-----------------------------------
+  showStepInfo "Extract b=0 image"
+  crlDWIRobustB0 -i "$NHDRfile" -o "${OFOLDER}/tmp/${prefix}b0.nrrd"
+  maxB0=`crlImageStats "${OFOLDER}/tmp/${prefix}b0.nrrd" | grep Mean`
+  maxB0=`echo "$maxB0" | sed -e "s/.*Maximum\ \([0-9.\-]*\).*/\1/"`
+
+  rm -Rf "${OFOLDER}/tmp/${prefix}b0.nrrd"
+  rm -Rf "${OFOLDER}/tmp"
+  rm -Rf "${OFOLDER}"
+
+  echo
+  echo "- The maximum intensity of b=0 is $maxB0"
+
+  #-----------------------------------
+  # If too big, rescale and export variable
+  #-----------------------------------
+  r=`echo "${maxB0}>32767" | bc`
+  if [[ $r -eq 1 ]]; then
+    echo "- Larger than 32768 >> Rescale!"
+    echo
+    mkdir -p "$OFOLDER"
+    crlDWICombineAcquisitions --maxnormalize 32767 -i "$NHDRfile" -o "${OFOLDER}/${prefix}normalizedDWI.nhdr"
+
+    ofile="${OFOLDER}/${prefix}normalizedDWI.nhdr"
+
+  #-----------------------------------
+  # Else just use original nhdr as rescaled data
+  #-----------------------------------
+  else
+    ofile="$NHDRfile"
+  fi
+
+  exportVariable "${DWIid}_RESCALED_NHDR" "${ofile}"
+
+  CACHE_StepHasBeenDone "${DWIid}_RESCALEDNHDR" "$NHDRfile" "${ofile}" 
+fi
+echo ""
+
+#-----------------------------------
+# To make it compatible with previous pipeline versions.
+# Probably not really necessary since the step above
+# should be run anyway, but in case...
+#-----------------------------------
+f="${DWIid}_RESCALED_NHDR"
+f=${!f} 
+if [[ ! -z "$f" ]]; then
+  NHDRfile=$f
+fi
+
+
+#=========================================================
+# Correct the DWI for motions by affine-registration
+#
+# OUTPUT: 
+# - ${DWIid}_MOTIONCORRECTED_NHDR
+#=========================================================
+
+
+# Just update the value of ${DWIid}_MOTIONCORRECTION_DONE
+# (The actual 'skip' will be done later)
+checkIfSkip "SKIP_DIFFUSION_MOCORR" "${DWIid}_MOTIONCORRECTION"
+
+showStepTitle "Correct for motion by registration"
+CACHE_DoStepOrNot "${DWIid}_MOTIONCORRECTION" "1.01"
+if [ $? -eq 0 ]; then
+  echo "- Use previously computed motion-corrected data."
+else
+  OFOLDER="$DWIProcessedDir/01-motioncorrection"
+  mkdir -p "$OFOLDER"
+  mkdir -p "$OFOLDER/tmp"
+
+
+  #-----------------------------------
+  # First compute the dwi->highres transform 
+  # to get the icc in the dwi space
+  # because it improves the coregistration of
+  # all the dwi together
+  #-----------------------------------
+
+  showStepInfo "Extract b=0 image"
+  crlDWIRobustB0 -i "$NHDRfile" -o "${OFOLDER}/tmp/${prefix}b0.nrrd"
+
+  if [[ -z "$ALIGN_ANAT_TO_DIFF" ]] || [[ $ALIGN_ANAT_TO_DIFF -eq 0 ]]; then 
+    showStepInfo "Registering b0 to resampled t2w image - Rigid"
+    echo "crlRigidRegistration -t 1 ${T2W_REF_MASKED} ${OFOLDER}/tmp/${prefix}b0.nrrd ${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.nrrd ${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.tfm" 
+    crlRigidRegistration -t 1 "${T2W_REF_MASKED}" "${OFOLDER}/tmp/${prefix}b0.nrrd" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.nrrd" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Registering b0 to resampled t2w image - Affine"
+    crlAffineRegistration "${T2W_REF_MASKED}" "${OFOLDER}/tmp/${prefix}b0.nrrd" "${OFOLDER}/${prefix}b0-to-rt2w.nrrd" "${OFOLDER}/tmp/${prefix}b0-to-rt2w.tfm" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Creating affine transform file"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}b0-to-rt2w.tfm" "${OFOLDER}/tmp/${prefix}affine-rt2w-to-b0.tfm" "1"
+    exitIfError "crlAnyTransformToAffineTransform"
+
+  else
+
+    showStepInfo "Registering resampled t2w image to b0 - Rigid"
+    crlRigidRegistration "${OFOLDER}/tmp/${prefix}b0.nrrd" "${T2W_REF_MASKED}" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.nrrd" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Registering resampled t2w image to b0 - Affine"
+    crlAffineRegistration "${OFOLDER}/tmp/${prefix}b0.nrrd" "${T2W_REF_MASKED}"  "${OFOLDER}/${prefix}rt2w-to-b0.nrrd" "${OFOLDER}/tmp/${prefix}rt2w-to-b0.tfm" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Creating affine transform file"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}rt2w-to-b0.tfm" "${OFOLDER}/tmp/${prefix}affine-rt2w-to-b0.tfm"
+    exitIfError "crlAnyTransformToAffineTransform"
+
+  fi
+
+
+  #-----------------------------------
+  # Transform the ICC to the DWI space
+  #-----------------------------------
+  showStepInfo "Resample the ICC mask to the DWI space"
+  crlResampler "${ICC_MASK}" "${OFOLDER}/tmp/${prefix}affine-rt2w-to-b0.tfm" "${OFOLDER}/tmp/${prefix}b0.nrrd" nearest "${OFOLDER}/${prefix}uncorrected_dwi_icc.nrrd"
+  exitIfError "crlResampler"
+ 
+  crlBinaryMorphology "${OFOLDER}/${prefix}uncorrected_dwi_icc.nrrd" dilate 1 5 "${OFOLDER}/tmp/${prefix}dwi_icc_dilated.nrrd"
+
+
+  #-----------------------------------
+  # Correct for motion!
+  #-----------------------------------
+  if [ $SKIP_DIFFUSION_MOCORR -eq 1 ]; then
+    exportVariable "${DWIid}_MOTIONCORRECTED_NHDR" "$NHDRfile"
+  else
+
+    showStepInfo "Correct for motion"
+    echo "crlDWIMotionCorrection -i $NHDRfile -o $OFOLDER/${prefix}mocoraff_diffusion.nhdr -n 1 --metric mi --interp linear -a powell --maxiter 800 --valtol 0.00001 --steptol 0.00001 --inmask ${OFOLDER}/tmp/${prefix}dwi_icc_dilated.nrrd --refmask ${OFOLDER}/tmp/${prefix}dwi_icc_dilated.nrrd"
+
+    crlDWIMotionCorrection -i "$NHDRfile" -o "$OFOLDER/${prefix}mocoraff_diffusion.nhdr" -n 1 --metric mi --interp linear -a powell --maxiter 800 --valtol 0.00001 --steptol 0.00001 --inmask "${OFOLDER}/tmp/${prefix}dwi_icc_dilated.nrrd" --refmask "${OFOLDER}/tmp/${prefix}dwi_icc_dilated.nrrd"
+    exitIfError "crlDWIMotionCorrection"
+
+    exportVariable "${DWIid}_MOTIONCORRECTED_NHDR" "${OFOLDER}/${prefix}mocoraff_diffusion.nhdr"
+  fi
+
+  ofile="${DWIid}_MOTIONCORRECTED_NHDR"
+  ofile=${!ofile}
+
+  setCachedValue "${DWIid}_UNCORRECTED_ICC" "${OFOLDER}/${prefix}uncorrected_dwi_icc.nrrd" # DON t use exportVariable on purpose. Only in the cache.
+
+  CACHE_StepHasBeenDone "${DWIid}_MOTIONCORRECTION" "$NHDRfile" "$ofile,${OFOLDER}/${prefix}uncorrected_dwi_icc.nrrd"
+fi
+echo ""
+
+#=========================================================
+# Compute the corrected NHDR (REMOVE gradient images if necessary)
+#
+# OUTPUT: 
+# - ${DWIid}_CORRECTED_NHDR
+#=========================================================
+showStepTitle "Find artifacted images"
+CACHE_DoStepOrNot "${DWIid}_ARTIFACTREMOVAL" "1.02"
+if [  $? -eq 0 ]; then
+  echo "- Use previously corrected NHDR."
+else
+  OFOLDER="$DWIProcessedDir/02-artifactcorrection"
+  mkdir -p "$OFOLDER"
+  mkdir -p "$OFOLDER/tmp"
+
+  ifile="${DWIid}_MOTIONCORRECTED_NHDR"
+  ifile=${!ifile} 
+
+  icc="${DWIid}_UNCORRECTED_ICC"
+  icc=${!icc} 
+
+  # Find the mask to compute the model prediction
+  crlBinaryMorphology "$icc" erode 1 4 "${OFOLDER}/tmp/${prefix}dwi_icc_eroded.nrrd"
+
+  # First correct for bad volumes
+  tend estim -B kvp -knownB0 false -i "$ifile" -o "${OFOLDER}/tmp/${prefix}1T.nrrd"
+  crlDWIFindArtifactedImages -i "$ifile" -t "${OFOLDER}/tmp/${prefix}1T.nrrd" --mask "${OFOLDER}/tmp/${prefix}dwi_icc_eroded.nrrd" -p "${NBTHREADS}" -o "${OFOLDER}/${prefix}corrected.nhdr" --info "${OFOLDER}/${prefix}correction.txt"
+  exitIfError "crlDWIFindArtifactedImages0"
+  
+  exportVariable "${DWIid}_CORRECTED_NHDR" "$OFOLDER/${prefix}corrected.nhdr"
+  exportVariable "${DWIid}_CORRECTION_INFO" "${OFOLDER}/${prefix}correction.txt"
+
+  CACHE_StepHasBeenDone "${DWIid}_ARTIFACTREMOVAL" "$ifile" "${OFOLDER}/${prefix}corrected.nhdr" 
+fi
+echo ""
+
+#=========================================================
+# Compute the T1 -> DWI transform
+#
+# OUTPUT: 
+# - ${DWIid}_DWI2T1W_TRSF
+# - ${DWIid}_T1W2DWI_TRSF
+#=========================================================
+showStepTitle "Compute the DWI->T1 transform"
+CACHE_DoStepOrNot "${DWIid}_DWI_TO_T1" 
+if [  $? -eq 0 ]; then
+  echo "- Use previously computed transform."
+else
+  OFOLDER="$DWIProcessedDir/03-dwi2t1w_registration"
+  mkdir -p "$OFOLDER"
+  mkdir -p "$OFOLDER/tmp"
+
+  ifile="${DWIid}_CORRECTED_NHDR"
+  ifile=${!ifile}
+
+  showStepInfo "Extract b=0 image"
+  crlDWIRobustB0 -i "$ifile" -o "${OFOLDER}/${prefix}b0.nrrd"
+
+  if [[ -z "$ALIGN_ANAT_TO_DIFF" ]] || [[ $ALIGN_ANAT_TO_DIFF -eq 0 ]]; then 
+ 
+    showStepInfo "Registering b0 to resampled t2w image - Rigid"
+    crlRigidRegistration "${T2W_REF_MASKED}" "${OFOLDER}/${prefix}b0.nrrd" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.nrrd" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Registering b0 to resampled t2w image - Affine"
+    crlAffineRegistration "${T2W_REF_MASKED}" "${OFOLDER}/${prefix}b0.nrrd" "${OFOLDER}/${prefix}b0-to-rt2w.nrrd" "${OFOLDER}/tmp/${prefix}b0-to-rt2w.tfm" "${OFOLDER}/tmp/${prefix}rigid_b0-to-rt2w.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Creating affine transform file"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}b0-to-rt2w.tfm" "${OFOLDER}/${prefix}affine-b0-to-rt2w.tfm"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}b0-to-rt2w.tfm" "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" "1"
+    exitIfError "crlAnyTransformToAffineTransform"
+
+  else
+
+    showStepInfo "Registering resampled t2w image to b0 - Rigid"
+    crlRigidRegistration "${OFOLDER}/${prefix}b0.nrrd" "${T2W_REF_MASKED}" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.nrrd" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Registering resampled t2w image to b0 - Affine"
+    crlAffineRegistration "${OFOLDER}/${prefix}b0.nrrd" "${T2W_REF_MASKED}" "${OFOLDER}/${prefix}rt2w-to-b0.nrrd" "${OFOLDER}/tmp/${prefix}rt2w-to-b0.tfm" "${OFOLDER}/tmp/${prefix}rigid_rt2w-to-b0.tfm"
+    exitIfError "crlRigidRegistration"
+
+    showStepInfo "Creating affine transform file"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}rt2w-to-b0.tfm" "${OFOLDER}/${prefix}affine-b0-to-rt2w.tfm" "1"
+    crlAnyTransformToAffineTransform "${OFOLDER}/tmp/${prefix}rt2w-to-b0.tfm" "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" 
+    exitIfError "crlAnyTransformToAffineTransform"
+
+  fi
+
+  exportVariable "${DWIid}_DWI2T1W_TRSF" "${OFOLDER}/${prefix}affine-b0-to-rt2w.tfm"
+  exportVariable "${DWIid}_T1W2DWI_TRSF" "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm"
+  exportVariable "${DWIid}_B0" "${OFOLDER}/${prefix}b0.nrrd"
+  exportVariable "${DWIid}_T1W2DWI_DWIREF" "${OFOLDER}/${prefix}b0.nrrd"
+
+  CACHE_StepHasBeenDone "${DWIid}_DWI_TO_T1" "$ifile,${T2W_REF_MASKED}" "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm,${OFOLDER}/${prefix}affine-b0-to-rt2w.tfm,${OFOLDER}/${prefix}b0.nrrd"
+fi
+echo ""
+
+#=========================================================
+# New: resample the T1W to DWI
+#=========================================================
+showStepTitle "Resample the T1 to DWI space"
+CACHE_DoStepOrNot "${DWIid}_resT1toDWI" 1.01
+if [  $? -eq 0 ]; then
+  echo "- Use previously computed image."
+else
+  OFOLDER="$DWIProcessedDir/03-dwi2t1w_registration"
+  mkdir -p "$OFOLDER"
+
+  crlResampler2 -g "${OFOLDER}/${prefix}b0.nrrd" -i "${T1W_REF}" -o "${OFOLDER}/${prefix}t1w-to-b0.nrrd" -t "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" --interp linear 
+  crlResampler2 -g "${OFOLDER}/${prefix}b0.nrrd" -i "${T1W_REF_MASKED}" -o "${OFOLDER}/${prefix}mt1w-to-b0.nrrd" -t "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" --interp linear 
+
+  crlResampler2 -g "${OFOLDER}/${prefix}b0.nrrd" -i "${T2W_REF}" -o "${OFOLDER}/${prefix}t2w-to-b0.nrrd" -t "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" --interp linear 
+  crlResampler2 -g "${OFOLDER}/${prefix}b0.nrrd" -i "${T2W_REF_MASKED}" -o "${OFOLDER}/${prefix}mt2w-to-b0.nrrd" -t "${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" --interp linear 
+
+  crlResampler2 -g "${T1W_REF}" -i "${OFOLDER}/${prefix}b0.nrrd" -o "${OFOLDER}/${prefix}b0-to-t1w.nrrd" -t "${OFOLDER}/${prefix}affine-b0-to-rt2w.tfm" --interp linear 
+
+  exportVariable "${DWIid}_B0_on_T1W" "${OFOLDER}/${prefix}b0-to-t1w.nrrd"
+
+  exportVariable "${DWIid}_T1W_on_DWI" "${OFOLDER}/${prefix}t1w-to-b0.nrrd"
+  exportVariable "${DWIid}_T1WMASKED_on_DWI" "${OFOLDER}/${prefix}mt1w-to-b0.nrrd"
+  exportVariable "${DWIid}_T2W_on_DWI" "${OFOLDER}/${prefix}t2w-to-b0.nrrd"
+  exportVariable "${DWIid}_T2WMASKED_on_DWI" "${OFOLDER}/${prefix}mt2w-to-b0.nrrd"
+
+  CACHE_StepHasBeenDone "${DWIid}_resT1toDWI" "${OFOLDER}/${prefix}b0.nrrd,${T1W_REF},${T1W_REF_MASKED},${T2W_REF},${T2W_REF_MASKED},${OFOLDER}/${prefix}affine-rt2w-to-b0.tfm" "${OFOLDER}/${prefix}t1w-to-b0.nrrd,${OFOLDER}/${prefix}mt1w-to-b0.nrrd,${OFOLDER}/${prefix}t2w-to-b0.nrrd,${OFOLDER}/${prefix}mt2w-to-b0.nrrd"
+fi
+echo ""
+
+
+#=========================================================
+# MASK the data
+#
+# OUTPUT: 
+# - ${DWIid}_MASKED_NHDR
+# - ${DWIid}_DWI_ICC_MASK
+#=========================================================
+showStepTitle "Mask the DWI data with ICC"
+CACHE_DoStepOrNot "${DWIid}_MASK_NHDR" 
+if [  $? -eq 0 ]; then
+  echo "- Use previously computed masked DWI data."
+else
+  OFOLDER="$DWIProcessedDir/04-masked"
+  mkdir -p "$OFOLDER"
+
+  # Transform the ICC to the DWI space
+  showStepInfo "Resample the ICC mask to the DWI space"
+  t1trsf="${DWIid}_T1W2DWI_TRSF"; t1trsf=${!t1trsf}
+  ref="${DWIid}_T1W2DWI_DWIREF"; ref=${!ref}
+
+  crlResampler2 -g "$ref" \
+                 -i "${ICC_MASK}" \
+                 -o "${OFOLDER}/${prefix}dwi_icc.nrrd" \
+                 -t "$t1trsf" \
+                 --interp linear \
+                 -p "${NBTHREADS}"
+
+  exitIfError "crlResampler2"
+
+  #crlResampler "${ICC_MASK}" "$t1trsf" "$ref" nearest "${OFOLDER}/${prefix}dwi_icc.nrrd"
+
+
+  # Mask the NHDR (DWI Raw data)
+  showStepInfo "Mask the RAW diffusion data with the ICC mask"
+  nhdr="${DWIid}_CORRECTED_NHDR"
+  nhdr=${!nhdr}
+  crlMaskImage2 -i "$nhdr" -m "${OFOLDER}/${prefix}dwi_icc.nrrd" -o "${OFOLDER}/${prefix}diffusion.nhdr"
+  exitIfError "crlMaskImage2"
+
+  exportVariable "${DWIid}_MASKED_NHDR" "${OFOLDER}/${prefix}diffusion.nhdr"
+  exportVariable "${DWIid}_DWI_ICC_MASK" "${OFOLDER}/${prefix}dwi_icc.nrrd"
+  
+  CACHE_StepHasBeenDone "${DWIid}_MASK_NHDR" "${ICC_MASK},${T1W_REF},$t1trsf,$nhdr" "${OFOLDER}/${prefix}diffusion.nhdr,${OFOLDER}/${prefix}dwi_icc.nrrd"
+fi
+echo ""
+
+#=========================================================
+# Denoise the raw data and mask
+# OUTPUT: ${DWIid}_DMASKED_NHDR
+#=========================================================
+# DENOISE REMOVED
+#
+#showStepTitle "Denoise masked data"
+#CACHE_DoStepOrNot "${DWIid}_DMASK_NHDR" 
+#if [  $? -eq 0 ]; then
+#  echo "- Use previously computed denoised data."
+#else
+#  OFOLDER="$DWIProcessedDir/04-masked"
+#  mkdir -p "$OFOLDER/tmp"
+#
+#  # Denoise the NON MASKED NHDR (DWI Raw data)
+#  nhdr="${DWIid}_CORRECTED_NHDR"
+#  nhdr=${!nhdr}
+#  crlDWIJointLMMSE -i "$nhdr" -o "${OFOLDER}/tmp/${prefix}ddiffusion.nhdr" -n 3
+#  exitIfError "crlDWIJointLMMSE"
+#
+#  # Mask the NHDR (DWI Raw data)
+#  echo "- Mask the denoised data with the ICC mask"
+#  iccmask="${DWIid}_DWI_ICC_MASK"
+#  iccmask=${!iccmask}
+#  crlMaskImage2 -i "${OFOLDER}/tmp/${prefix}ddiffusion.nhdr" -m "$iccmask" -o "${OFOLDER}/${prefix}ddiffusion.nhdr"
+#  exitIfError "crlMaskImage2"
+#
+#  rm -Rf "${OFOLDER}/tmp"
+#
+#  exportVariable "${DWIid}_DMASKED_NHDR" "${OFOLDER}/${prefix}ddiffusion.nhdr"
+#
+#  CACHE_StepHasBeenDone "${DWIid}_DMASK_NHDR" "$nhdr" "${OFOLDER}/${prefix}ddiffusion.nhdr" 
+#fi
+#echo ""
+
+
+#=========================================================
+# RESAMPLE THE DWI RAW TO THE T1
+#
+# OUTPUT: ${DWIid}_RMASKED_NHDR
+#=========================================================
+showStepTitle "Resample the DWI RAW data"
+CACHE_DoStepOrNot "${DWIid}_RESAMPLE_DWI" "1.03"
+if [  $? -eq 0 ]; then
+  echo "- Use previously computed resampled DWI data."
+else
+  OFOLDER="$DWIProcessedDir/05-rmasked"
+  mkdir -p "$OFOLDER"
+
+  nhdr="${DWIid}_CORRECTED_NHDR"; nhdr=${!nhdr}
+  dwi2t1="${DWIid}_DWI2T1W_TRSF"; dwi2t1=${!dwi2t1}
+  
+  crlResampler2 -i "$nhdr" -o "${OFOLDER}/${prefix}rdiffusion.nhdr" --interp sinc -g "${T1W_REF}" -t "$dwi2t1" -p "${NBTHREADS}"
+  exitIfError "crlResampler2"
+
+  crlMaskImage2 -i "${OFOLDER}/${prefix}rdiffusion.nhdr" -m "$ICC_MASK" -o "${OFOLDER}/${prefix}mrdiffusion.nhdr"
+  exitIfError "crlMaskImage2"
+
+ 
+  exportVariable "${DWIid}_RMASKED_NHDR" "${OFOLDER}/${prefix}mrdiffusion.nhdr"
+  exportVariable "${DWIid}_RNHDR" "${OFOLDER}/${prefix}rdiffusion.nhdr"
+
+
+  CACHE_StepHasBeenDone "${DWIid}_RESAMPLE_DWI" "$nhdr,$dwi2t1,${T1W_REF}" "${OFOLDER}/${prefix}rdiffusion.nhdr,${OFOLDER}/${prefix}mrdiffusion.nhdr"
+fi
+echo ""
+
+
+}
+

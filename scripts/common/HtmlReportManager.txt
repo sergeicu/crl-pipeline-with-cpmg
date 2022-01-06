@@ -1,0 +1,292 @@
+#!/bin/sh
+#=====================================================================
+# BASH SCRIPTS - REPORT MANAGER
+# Benoit Scherrer, CRL, 2013
+#---------------------------------------------------------------------
+# Define useful functions to create latex reports
+#=====================================================================
+umask 002
+
+#--------------------------------------------------
+# Define directories
+#--------------------------------------------------
+if [[ -f $ScanProcessedDir/ScanInfo.sh ]]; then
+  # Multiple subjects mode!
+  ReportDir=$BaseProcessedDir/report/$CaseName/$ScanName
+else
+  ReportDir="$ScanProcessedDir/report"
+fi
+ReportImgRelDir="data/imgs"
+ReportImgDir="$ReportDir/${ReportImgRelDir}"
+ReportDataDir="$ReportDir/data"
+
+mkdir -p "$ReportImgDir"
+
+#--------------------------------------------------
+# Define directories
+#--------------------------------------------------
+ReportHtmlFile="${ReportDir}/report.html"
+
+if [[ ${CREATE_REPORT} -eq 1 ]]; then
+  echo "- Create report in $ReportDir"
+fi
+
+function createMultiSubjectIndex()
+{
+   local htmlIndex="$BaseProcessedDir/report/index.html"
+   local htmlSummary="$BaseProcessedDir/report/summary.html"
+   local htmlInitContent="$BaseProcessedDir/report/title.html"
+   local c
+   local s
+
+   local lockfile="${htmlIndex}.lock"
+   mutexLockFile "$lockfile"
+
+   echo "<html><h1>CRL Analysis Pipeline</h1> <h3> Multiple subjects mode</h3></html>" > ${htmlInitContent}
+
+   echo "<html>" > ${htmlIndex}
+   echo "<frameset cols='25%,*'>" >> ${htmlIndex}
+   echo "  <frame src='./summary.html'>" >> ${htmlIndex}
+   echo "  <frame src='./title.html' name='content'>" >> ${htmlIndex}
+   echo "</frameset'>" >> ${htmlIndex}
+   echo "</html>" >> ${htmlIndex}
+
+
+   echo "<html><body>" > ${htmlSummary}
+
+
+   source "$BaseProcessedDir/DB.sh"
+   
+   #------------------------------------------
+   # For all cases
+   #------------------------------------------
+   for (( c=1; c<=$CaseCount ; c++ ));
+   do
+     local CaseFolder=${Case[$c]};
+
+     #-----------------------------
+     # Read CaseInfo.sh
+     #-----------------------------
+     if [ ! -f "$CaseFolder/CaseInfo.sh" ]; then
+       continue;
+     fi
+     source "$CaseFolder/CaseInfo.sh" 
+
+     #-----------------------------
+     # Loop on all scans
+     #-----------------------------
+     echo "<p>" >> ${htmlSummary}
+     for (( s=1; s<=$ScanCount ; s++ ));
+     do  
+       #-----------------------------
+       # Read ScanInfo.sh
+       #-----------------------------
+       local ScanFolder=${Scan[$s]};  
+       if [ ! -f "$ScanFolder/ScanInfo.sh" ]; then
+         continue;
+       fi
+       source "$ScanFolder/ScanInfo.sh" 
+
+       #-----------------------------
+       # Insert info in html
+       #-----------------------------
+       local link="./$CaseName/$ScanName/index.html"
+
+       echo "<a href='$link' target='content'> $CaseName/$ScanName </a>" >> ${htmlSummary}
+     done
+     echo "</p>" >> ${htmlSummary}
+     
+
+   done
+
+   echo "</html>" >> ${htmlSummary}
+
+   mutexUnlockFile "$lockfile"
+}
+
+function addHtmlToMainDocument
+{
+  local secondaryDoc="$1"
+  local mainDoc="$2"
+
+  local lockfile="${mainDoc}.lock"
+  mutexLockFile "$lockfile"
+
+  sed 's/\.\/imgs\//\.\/data\/imgs\//g' "$secondaryDoc" > "./tmpXX21XX.html"
+
+  cat "tmpXX21XX.html" >> $mainDoc
+
+  rm -f tmpXX21XX.html
+
+  mutexUnlockFile "$lockfile"
+}
+
+function twoLevelsFileName()
+{
+  local f="$1"
+  local d1=`basename "$f"`
+  local d2=`dirname "$f"`
+  d2=`basename "$d2"`
+  echo "$d2/$d1"
+}
+function threeLevelsFileName()
+{
+  local f="$1"
+  local d1=`basename "$f"`
+  local d2=`dirname "$f"`
+  local d3=`dirname "$d2"`
+  d2=`basename "$d2"`
+  d3=`basename "$d3"`
+  echo "$d3/$d2/$d1"
+}
+
+function htmlInsertImageFloat()
+{
+  local f="$1"
+  local url="$2"
+  local caption="$3"
+      
+  if [[ $4 -eq 200 ]]; then
+    imgsize="200"
+  elif [[ $4 -eq 300 ]]; then
+    imgsize="300"
+  elif [[ $4 -eq 600 ]]; then
+    imgsize="600"
+  else
+    imgsize="400"
+  fi
+
+  echo "<div class='imgfloat${imgsize}'>" >> $f
+  echo "<img src='${url}' />" >> $f
+  echo "<div class='imgcaption'> ${caption} </div>" >> $f
+  echo "</div>" >> $f
+}
+
+function htmlInsertImageFloatMagnifyOnHover()
+{
+  local f="$1"
+  local url="$2"
+  local caption="$3"
+     
+  if [[ $4 -eq 200 ]]; then
+    imgsize="200"
+  elif [[ $4 -eq 300 ]]; then
+    imgsize="300"
+  elif [[ $4 -eq 600 ]]; then
+    imgsize="600"
+  else
+    imgsize="400"
+  fi
+  
+  echo "<div class='imgfloat${imgsize}'>" >> $f
+  echo "<a class='smallpic' href="#nogo" >  <img src='${url}' />  <img class='largepic' src='${url}' /> </a>" >> $f
+  echo "<div class='imgcaption'> ${caption} </div>" >> $f
+  echo "</div>" >> $f
+}
+
+function htmlEndFloat()
+{
+  local f="$1"
+  echo "<div class='endfloat'> &nbsp; </div>" >> $f
+}
+
+function htmlInsertImage()
+{
+  local f="$1"
+  local url="$2"
+  local caption="$3"
+       
+  echo "<div class='img'>" >> $f
+  echo "<img src='${url}' />" >> $f
+  echo "<div class='imgcaption'> ${caption} </div>" >> $f
+  echo "</div>" >> $f
+}
+
+
+function runMisterI()
+{
+  /opt/x86_64/pkgs/MisterI-alpha/MisterI $@ 
+  sleep 1
+
+  # Wait for MisterI to terminate
+  
+  local p=`echo "$@" | sed 's/,/\ /g'`
+  local tmp=`ps -AF | grep "bin/MisterI $1 $2 $3" | grep -v grep`
+ 
+  while [[ ! -z "$tmp" ]];
+  do
+    sleep 1 
+    tmp=`ps -AF | grep "bin/MisterI $1 $2 $3" | grep -v grep`
+    #echo "-----${tmp}-"
+  done
+ 
+}
+
+function htmlInsertAllDWIs()
+{
+    local htmlFile="$1"
+    local nhdr="$2"
+    local pngprefix="$3"
+
+    local cmd="--new"
+
+    local i=0
+    for f in `cat "$nhdr" | grep "\.nrrd"`
+    do
+      local file=`dirname $nhdr`/$f
+      cmd="$cmd $file --annotationvisible 0 --cursorvisible 0 --size 500,500 --singleviewlayout coronal --snapshot $ReportImgDir/${pngprefix}_${i}.png --close"
+
+      htmlInsertImageFloat "$htmlFile" "./imgs/${pngprefix}_${i}.png" "Image $i" 200
+
+      i=$((i+1)) 
+    done
+    htmlEndFloat "$htmlFile"
+
+    runMisterI $cmd --exit
+}
+
+
+function htmlInsertMultiSlices()
+{
+    local htmlFile="$1"
+    local imgfile="$2"
+    local pngprefix="$3"
+    local viewlayout="$4"
+    local nslices="$5"
+    local cmd="$6"
+
+    if [[ -z "$cmd" ]]; then 
+      cmd="--new $imgfile --annotationvisible 0 --cursorvisible 0 --size 500,500 --singleviewlayout ${viewlayout}"
+    else
+      cmd="$cmd --singleviewlayout ${viewlayout}"
+    fi
+
+
+    local i=0
+    for i in `seq 1 $nslices`
+    do
+      local rel=`echo "scale=6; ($i+1.0)/($nslices + 1.0)" | bc`
+      local pos
+      if [[ "$viewlayout" == "axial" ]]; then
+         pos="0.5,0.5,$rel"
+      elif [[ "$viewlayout" == "coronal" ]]; then
+         pos="0.5,$rel,0.5" 
+      else
+         pos="$rel,0.5,0.5"
+      fi
+ 
+      cmd="$cmd --relcursorpos $pos --snapshot $ReportImgDir/${pngprefix}_${i}.png"
+
+      htmlInsertImageFloat "$htmlFile" "./imgs/${pngprefix}_${i}.png" "" 200
+    done
+
+    htmlEndFloat "$htmlFile"
+
+    runMisterI $cmd --exit
+}
+
+
+#if [[ -f $ScanProcessedDir/ScanInfo.sh ]]; then
+#  createMultiSubjectIndex
+#fi
+

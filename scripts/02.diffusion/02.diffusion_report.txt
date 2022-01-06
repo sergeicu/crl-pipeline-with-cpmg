@@ -1,0 +1,156 @@
+#!/bin/bash
+
+
+function RunDWIPipeline_report
+{
+  local prevdir=`pwd`
+
+  #---------------------------------------------------
+  # Create the processed subdir
+  #---------------------------------------------------
+  DWIid=`basename $1`
+  DWIid=`echo "${DWIid}" | sed "s/ /_/g"`
+  DiffHtmlFile="${ReportDataDir}/DiffPipeline${DWIid}.html"
+
+  showStepTitle "Report - DWI pipeline $DWIid"
+  CACHE_DoStepOrNot "REPORT_DWI_${DWIid}" 1.0024
+  if [ $? -eq 0 ]; then
+    echo "- Use previously generated report"
+  else
+    echo "" > ${DiffHtmlFile}
+
+    nhdr="${DWIid}_DISTORTIONCORRECTED_NHDR"
+    nhdr=${!nhdr}
+    #if [[ -f ${nhdr} ]] ; then
+      #echo "<h3>DWI '$DWIid' : After distortion correction</h3>" >> ${DiffHtmlFile}
+      #htmlInsertAllDWIs "${DiffHtmlFile}" "$nhdr" "dwi_${DWIid}_distcorr"
+    #fi  
+
+    if [[ $SKIP_DIFFUSION_MOCORR -ne 1 ]]; then
+      nhdr="${DWIid}_MOTIONCORRECTED_NHDR"
+      nhdr=${!nhdr}
+      if [[ -f ${nhdr} ]] ; then
+        echo "<h3>DWI '$DWIid' : After mocorr</h3>" >> ${DiffHtmlFile}
+        htmlInsertAllDWIs "${DiffHtmlFile}" "$nhdr" "dwi_${DWIid}_mocorr"
+      fi  
+    fi
+
+    #--------------------------------------------------------------
+    # Couple of slices (ax, cor, sag)
+    #--------------------------------------------------------------
+    b0="${DWIid}_B0"
+    b0=${!b0}
+
+    echo "<h3>DWI - Couple of slices</h3>" >> ${DiffHtmlFile}
+    htmlInsertMultiSlices "${DiffHtmlFile}" "$b0" "dwi_${DWIid}_b0_axslice" "axial" 10
+    htmlInsertMultiSlices "${DiffHtmlFile}" "$b0" "dwi_${DWIid}_b0_sagslice" "sagittal" 10
+    htmlInsertMultiSlices "${DiffHtmlFile}" "$b0" "dwi_${DWIid}_b0_corslice" "coronal" 10
+
+    #--------------------------------------------------------------
+    # Registration T1w - DTI
+    #--------------------------------------------------------------
+    b0="${DWIid}_B0"
+    b0=${!b0}
+
+    t1onb0="${DWIid}_T1W_on_DWI"
+    t1onb0=${!t1onb0}
+
+    b0ont1="${DWIid}_B0_on_T1W"
+    b0ont1=${!b0ont1}
+
+    cmd="--new ${T1W_REF} --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_t1w.png"
+    cmd="$cmd --overlay ${b0ont1} --renderer misteri.renderer.scalarsliced --snapshot $ReportImgDir/dwi_${DWIid}_b0overlayt1w.png --close"
+    cmd="$cmd ${b0ont1} --renderer misteri.renderer.scalarsliced --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_b0ont1w.png --close"
+
+    runMisterI $cmd --exit
+
+    echo "<h3>DWI and anatomical registration</h3>" >> ${DiffHtmlFile}
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_t1w.png" "T1w" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_b0overlayt1w.png" "B0 overlayed on T1w" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_b0ont1w.png" "B0 resampled to T1w" 600
+    htmlEndFloat $DiffHtmlFile
+
+    cmd="--new ${T1W_REF} --annotationvisible 0 --cursorvisible 0 --size 500,600 --snapshot $ReportImgDir/dwi_${DWIid}_t1w.png --overlay ${b0ont1} --renderer misteri.renderer.scalarsliced"
+    htmlInsertMultiSlices "${DiffHtmlFile}" "$b0" "dwi_${DWIid}_b0_corsliceoverlay" "coronal" 10 "$cmd"
+
+    cmd="--new ${T1W_REF} --annotationvisible 0 --cursorvisible 0 --size 500,600 --snapshot $ReportImgDir/dwi_${DWIid}_t1w.png --overlay ${b0ont1} --renderer misteri.renderer.scalarsliced"
+    htmlInsertMultiSlices "${DiffHtmlFile}" "$b0" "dwi_${DWIid}_b0_axsliceoverlay" "axial" 10 "$cmd"
+
+    #--------------------------------------------------------------
+    # DTI - DWI space
+    #--------------------------------------------------------------
+
+    echo "<h3>DWI '$DWIid' : DWI space</h3>" >> ${DiffHtmlFile}
+
+    f="${DWIid}_TENSOR_1T"
+    f=${!f}
+    cmd="--new $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout axial --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTI_ax.png --close"
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout coronal --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTI_cor.png --close"
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout sagittal --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTI_sag.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTI_ax.png" "DTI axial" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTI_cor.png" "DTI coronal" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTI_sag.png" "DTI sagittal" 600
+    htmlEndFloat $DiffHtmlFile
+
+    f="${DWIid}_TENSOR_1T_ColorFA"
+    f=${!f}
+    cmd="$cmd $f --renderer misteri.renderer.rgbsliced --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTIcFA.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTIcFA.png" "Color FA"
+
+    f="${DWIid}_TENSOR_1T_FA"
+    f=${!f}
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTI-FA.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTI-FA.png" "FA"
+
+    f="${DWIid}_TENSOR_1T_MD"
+    f=${!f}
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_DTI-MD.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_DTI-MD.png" "MD"
+    htmlEndFloat $DiffHtmlFile
+
+    runMisterI $cmd --exit
+
+
+    #--------------------------------------------------------------
+    # DTI - T1 space
+    #--------------------------------------------------------------
+
+    echo "<h3>DWI '$DWIid' : Ref (T1w) space</h3>" >> ${DiffHtmlFile}
+
+    f="${DWIid}_RTENSOR_1T"
+    f=${!f}
+    cmd="--new $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout axial --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTI_ax.png --close"
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout coronal --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTI_cor.png --close"
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --singleviewlayout sagittal --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTI_sag.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTI_ax.png" "DTI axial" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTI_cor.png" "DTI coronal" 600
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTI_sag.png" "DTI sagittal" 600
+    htmlEndFloat $DiffHtmlFile
+
+    f="${DWIid}_RTENSOR_1T_ColorFA"
+    f=${!f}
+    cmd="$cmd $f --renderer misteri.renderer.rgbsliced --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTIcFA.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTIcFA.png" "Color FA"
+
+    f="${DWIid}_RTENSOR_1T_FA"
+    f=${!f}
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTI-FA.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTI-FA.png" "FA"
+
+    f="${DWIid}_RTENSOR_1T_MD"
+    f=${!f}
+    cmd="$cmd $f --annotationvisible 0 --cursorvisible 0 --size 600,600 --snapshot $ReportImgDir/dwi_${DWIid}_rDTI-MD.png --close"
+    htmlInsertImageFloat "$DiffHtmlFile" "./imgs/dwi_${DWIid}_rDTI-MD.png" "MD"
+    htmlEndFloat $DiffHtmlFile
+
+    runMisterI $cmd --exit
+
+
+    CACHE_StepHasBeenDone "REPORT_DWI_${DWIid}" "$T1W_REF,$T2W_REF,${ICC_MASK}" ""
+
+  fi
+
+  addHtmlToMainDocument ${DiffHtmlFile} "${ReportDir}/index.html"
+
+}
+

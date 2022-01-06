@@ -1,0 +1,235 @@
+#!/bin/bash
+SCRIPTPATH=$(cd `dirname "${BASH_SOURCE[0]}"` && pwd)
+
+red='\e[0;31m'
+green='\e[0;32m'
+bold='\e[1m'
+NC='\e[0m'
+
+
+function exitIfError()
+{
+  if [[ $? -ne 0 ]]; then
+    echo -e "${red}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    if [ -z "$1" ]; then
+      echo " ERROR during the execution of the last tool."
+    else
+      echo " ERROR during the execution of $1."  
+    fi
+    echo " The pipeline is stopped."
+    echo -e "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!${NC}"
+    exit 1;
+  fi
+}
+
+
+usage()
+{
+    numHelpLines=`crlDCIEstimate --help 2>/dev/null | wc -l`
+    let numLines=numHelpLines-2
+    crlDCIEstimate --help | head -$numLines
+    echo "   --dtiAtlas "
+    echo "     (required) A single-tensor atlas in the coordinate frame of the prior."
+    echo " "
+    echo "   --res "
+    echo "     Characteristic resolution of the input image in mm (default: 2)."
+    echo " "
+    echo "   --forceRecompute [1/0]"
+    echo "     Force to recompute alignment, etc... even if already present (default: 1)."
+    echo " "
+}
+
+
+
+if [ $# -eq 0 ]
+then
+    usage
+    exit;
+fi
+
+dwi=
+output=
+ntensors=
+prior=
+proc=
+res=
+iso=
+deletetmp=1
+forceRecompute=1
+
+args=("$@")
+
+otherargs=()
+k=0
+while (( k<$# ))
+do
+    arg=${args[$k]}
+    case "$arg" in
+        ( "-i" | "--input" )    let k=k+1; dwi=${args[$k]};;
+        ( "-o" | "--output" )   let k=k+1; output=${args[$k]};;
+        ( "-n" | "--ntensors ") let k=k+1; ntensors=${args[$k]};;
+        ( "--prior" )           let k=k+1; prior=${args[$k]};;
+        ( "-p" | "--proc" )     let k=k+1; proc=${args[$k]};;
+        ( "--res" )             let k=k+1; res=${args[$k]};;
+        ( "--dtiAtlas" )        let k=k+1; dtiAtlas=${args[$k]};; 
+        ( "--waterfraction")    let k=k+1; iso=${args[$k]};;    
+        ( "--deletetmp" )       let k=k+1; deletetmp=${args[$k]};;      
+        ( "--forceRecompute" )  let k=k+1; forceRecompute=${args[$k]};;      
+        ( "-h" | "--help" )     usage; exit;;
+        (*) otherargs+="$arg ";;
+    esac
+    let k=k+1
+done
+
+if [ -z $res ]
+then 
+    res=2
+fi
+
+#--------------------------------------------------------
+# If waterfraction was not set, mention that we force it. 
+#--------------------------------------------------------
+if [[ $iso -ne 1 ]]; then
+    echo "Warning. --waterfraction has been forced set because the evaluation with a prior requires it."
+fi
+
+#--------------------------------------------------------
+# If no prior: throw an error
+#--------------------------------------------------------
+if [ -z $prior ]
+then
+    echo -e "${red}Error. A prior must be used with crlDCIEstimateFromHARDI."
+    echo -e "      If you do not want to use a prior, please use crlDCIEstimate instead.${NC}"
+    exit
+elif [ ! -f $prior ]
+then
+    echo -e "${red}Error. The file $prior does not exist.${NC}"
+    exit
+fi
+
+#--------------------------------------------------------
+# If ntensors is set, make sure it is compatible with the prior, otherwise, force it to be compatible and throw a warning
+#--------------------------------------------------------
+numFiles=`cat $prior | wc -l`
+let numOthers=numFiles-1
+numTensors=`bc <<< "scale=0;($numOthers/4)"`
+
+if [ ! -z $ntensors ]
+then
+    if (( numTensors != ntensors ))
+    then
+        echo "Warning. The specified number (${ntensors}) of tensors does not correspond to the number of tensors in the prior (${numTensors})."
+        echo "      Forcing the input number to match the prior."
+    fi
+fi
+
+#--------------------------------------------------------
+# If no dtiAtlas: throw an error
+#--------------------------------------------------------
+if [ -z $dtiAtlas ]
+then
+    echo -e "${red}Error. Argument --dtiAtlas is missing. Try crlDCIEstimateFromHARDI --help for additional help.${NC}"
+    exit;
+fi
+
+#--------------------------------------------------------
+# If no proc: set it to 1
+#--------------------------------------------------------
+if [ -z $proc ]
+then 
+    proc=1
+fi
+
+if [[ -z dwi || -z $output ]]
+then
+    crlDCIEstimate
+fi
+
+#if ls ${output}* &> /dev/null; then
+#    echo -e "${red}Error. A file or directory starting with $output already exists." 
+#    echo -e "  Please select a different output name or remove all files starting with the selected name first.${NC}"
+#    exit;
+#fi
+
+# remove last occurence of .nrrd if needed
+output=`echo "${output}" | sed 's/\(.*\).nrrd/\1/'`
+
+tmpDir=${output}.tmp
+mkdir -p $tmpDir
+
+#--------------------------------------------------------
+# Compute block half-size (bh), space between blocks (sb), block neighborhood (blv) from resolution (should all be 2mm in space at highest resolution)
+#--------------------------------------------------------
+vox=`bc <<< "scale=2;(2/$res)"`
+vox=`echo $vox|awk '{print int($1+0.5)}'`
+if (( vox==0 ))
+then
+    vox=1
+fi
+
+#--------------------------------------------------------
+# Compute smoothing kernel from resolution (should be 2.5mm in radius)
+#--------------------------------------------------------
+sig=`bc <<< "scale=1;(3.5/$res)"`
+
+#--------------------------------------------------------
+# First estimate a DTI from the data
+#--------------------------------------------------------
+echo -e "${bold}Estimating DTI for the subject...${NC}"
+if [[ $forceRecompute -eq 1 ]] || [[ ! -f ${tmpDir}/dti.nrrd ]] ; then
+  tend estim -B kvp -knownB0 false -i $dwi -o ${tmpDir}/dti.nrrd #&>${tmpDir}/logEstimateDTI.txt
+  exitIfError "tend"
+fi
+echo -e "${green} Done ${NC}\n"
+
+#--------------------------------------------------------
+# Register the DTI atlas to the DTI of the subject
+#--------------------------------------------------------
+echo -e "${bold}Estimating the transformation to map the prior to the subject...${NC}"
+nprocregistration=$proc     # crlBlockMatchingRegistration is not thread-safe but ok for estimation of the transform
+
+if [[ $forceRecompute -eq 1 ]] || [[ ! -f ${tmpDir}/atlas_to_dti_FinalT.tfm ]] ; then
+    echo "- rigid..."
+    crlBlockMatchingRegistration -f $dtiAtlas -r ${tmpDir}/dti.nrrd -o ${tmpDir}/atlas_to_dti_rig -s 4 -e 0 -k 0.8 -l 0.8 --sig 2.5 --mv 0.0 -n 10 --bh 2 --sb 2 --blv 2 --rs 1 --ssi cc -I linear -p $nprocregistration -t rigid &>${tmpDir}/logRigidRegistration.txt
+    exitIfError "crlBlockMatchingRegistration"
+    echo "- affine..."
+    crlBlockMatchingRegistration -f $dtiAtlas -r ${tmpDir}/dti.nrrd -o ${tmpDir}/atlas_to_dti_aff -i ${tmpDir}/atlas_to_dti_rig_FinalT.tfm -s 4 -e 0 -k 0.8 -l 0.8 --sig 2.5 --mv 0.0 -n 10 --bh 2 --sb 2 --blv 2 --rs 1 --ssi cc -I linear -p $nprocregistration -t affine &>${tmpDir}/logAffineRegistration.txt
+    exitIfError "crlBlockMatchingRegistration"
+    echo "- dense..."
+    crlBlockMatchingRegistration -f $dtiAtlas -r ${tmpDir}/dti.nrrd -o ${tmpDir}/atlas_to_dti -i ${tmpDir}/atlas_to_dti_aff_FinalT.tfm -s 4 -e 0 -k 0.8 -l 0.8 --sig $sig --mv 0.0 -n 10 --bh $vox --sb $vox --blv $vox --rs 1 --ssi cc -I linear -p $nprocregistration -t dense &>${tmpDir}/logDenseRegistration.txt
+    exitIfError "crlBlockMatchingRegistration"
+fi
+echo -e "${green} Done ${NC}\n"
+
+#--------------------------------------------------------
+# Transform the prior to the subject's space
+#--------------------------------------------------------
+transformedPrior=${tmpDir}/prior_to_subject
+echo -e "${bold}Resampling the prior to the subject...${NC}"
+if [[ $forceRecompute -eq 1 ]] || [[ ! -f $transformedPrior.txt ]] ; then
+    # Warning: last param to nthread=1 because code not thread-safe
+    $SCRIPTPATH/crlDCITransformPrior $prior ${tmpDir}/atlas_to_dti_FinalT.tfm $transformedPrior ${tmpDir}/dti.nrrd 1 #&>${tmpDir}/logAlignPrior.txt
+    exitIfError "crlDCITransformPrior"
+fi
+
+echo -e "${green} Done ${NC}\n"
+
+#--------------------------------------------------------
+# Estimate with the prior
+#--------------------------------------------------------
+echo "Estimating the DCI model using the prior..."
+echo
+echo "Run crlDCIEstimate -i $dwi -o ${output}.nrrd -n $numTensors --waterfraction 1 -p $proc --prior $transformedPrior.txt $otherargs"
+crlDCIEstimate -i $dwi -o ${output}.nrrd -n $numTensors --waterfraction 1 -p $proc --prior $transformedPrior.txt $otherargs # &>${tmpDir}/logMFMEstimate.txt
+exitIfError "crlDCIEstimate"
+
+echo -e "${green} Done ${NC}"
+
+# The tmp folder will not be deleted if there was any error (because we use exitIfError)
+if [[ $deletetmp -eq 1 ]]; then
+  rm -r $tmpDir
+fi
+
+
+exit 0
+
